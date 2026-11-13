@@ -20,7 +20,9 @@ jsonref>=1.0
 langchain-google-vertexai>=3.0
 opentelemetry-api>=1.24
 opentelemetry-sdk>=1.24
-opentelemetry-instrumentation-fastapi>=0.45
+# NOTE: opentelemetry-instrumentation-fastapi was dropped 2026-11-14 — every
+# release is a pre-release (0.xxb0), so pip can never satisfy a >=0.45 pin,
+# and nothing in the app imports it (tracing.py uses only api/sdk + OTLP).
 sentence-transformers>=2.7
 rank-bm25>=0.2.2
 pypdf>=4.0

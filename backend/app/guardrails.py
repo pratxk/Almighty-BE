@@ -446,7 +446,15 @@ def check_output(answer: str, role: str | None = None) -> dict:
     types = _enabled_pii_types()
     if not types or not (answer or "").strip():
         return {"status": "pass", "answer": answer, "findings": []}
-    findings = _presidio_scan(answer, types)
+    # Only attempt Presidio when its spaCy model is actually installed.
+    # _presidio_scan imports spaCy + builds the engine first and only
+    # discovers the missing model inside analyze() — on a 512 MB free
+    # Render container that attempt (slow import + engine construction)
+    # OOM-kills the process on the first chat request (twice, 2026-11-14
+    # ~03:35 and ~03:42 IST), so the regex scan never even runs.
+    # pii_engine() is two cheap find_spec calls; gate on it.
+    findings = (_presidio_scan(answer, types)
+                if pii_engine() == "presidio" else None)
     if findings is None:
         findings = _regex_scan(answer, types)
     if not findings:

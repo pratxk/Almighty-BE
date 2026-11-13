@@ -128,6 +128,19 @@ class GeminiEmbeddingFunction:
                 if resp is not None:
                     resp.raise_for_status()
                 raise last_exc  # type: ignore[misc]
+            # Daily-quota 429s carry a huge retry-after (hours): sleeping
+            # through 4 attempts would stall a chat for minutes. Fail fast
+            # instead — callers degrade (BM25/web fallback, clean decline).
+            if resp is not None and resp.status_code == 429:
+                try:
+                    ra = float(resp.headers.get("retry-after") or 0)
+                except ValueError:
+                    ra = 0.0
+                if ra > 300:
+                    logger.warning(
+                        "Gemini embed quota exhausted (retry-after %.0fs); "
+                        "failing fast instead of retrying.", ra)
+                    resp.raise_for_status()
             wait = 12.0 if attempt == 3 else (5.0 if attempt == 2 else 2.0)
             if resp is not None:
                 retry_after = resp.headers.get("retry-after")

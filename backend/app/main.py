@@ -150,8 +150,17 @@ async def chat(req: ChatRequest) -> dict:
             run_id=result["run_id"], trace=result["trace"])
         return result
     # The graph is synchronous (httpx + LangGraph); run it off the event loop.
-    result = await asyncio.to_thread(run_adaptive_rag, req.question, corpus,
-                                     req.history, req.role, req.web_search)
+    # A failure anywhere in the run (e.g. upstream AI quota) is a 503 with
+    # a plain message, never a bare 500 — the run is logged for diagnosis.
+    try:
+        result = await asyncio.to_thread(run_adaptive_rag, req.question, corpus,
+                                         req.history, req.role, req.web_search)
+    except Exception as exc:  # noqa: BLE001 - surfaced as a 503, not a 500
+        logger.exception("Chat run failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Almighty is temporarily unavailable (the AI provider is "
+                   "rate-limited right now); please try again in a little while.")
     # Best-effort store: a failed cache write must never fail the answer.
     try:
         await asyncio.to_thread(cache.store, result, req.question,

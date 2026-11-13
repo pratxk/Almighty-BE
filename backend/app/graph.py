@@ -435,11 +435,20 @@ def retrieve(state: dict) -> dict:
     complex_markers = (" and ", "compare", "difference", "versus", " vs ", "differences")
     is_complex = words > 12 or any(m in query.lower() for m in complex_markers)
     top_k = 8 if is_complex else (3 if words <= 5 else settings.TOP_K)
-    qvec = embed_query(query)
+    # Retrieval must never 500 the chat: if embeddings or the vector
+    # store are down (e.g. Gemini embedding quota exhausted), continue
+    # with no local docs — grading keeps 0, so the graph falls through
+    # to the web-search fallback or a clean decline.
+    try:
+        qvec = embed_query(query)
+        docs = get_vector_store().search(query, qvec, top_k=top_k,
+                                         role=state.get("role"))
+    except Exception as exc:  # noqa: BLE001 - retrieval must not break chat
+        logger.warning("retrieve: local search unavailable (%s); continuing "
+                       "with no local docs.", exc)
+        docs = []
     # Guardrails: the role filter runs inside search (Qdrant-side filter
     # + pool backstop), so restricted chunks never reach grading.
-    docs = get_vector_store().search(query, qvec, top_k=top_k,
-                                     role=state.get("role"))
     _finish_step(state, "retrieve", started, query=query, top_k=top_k,
                  retrieved=len(docs), complexity="complex" if is_complex else
                  ("simple" if words <= 5 else "default"),

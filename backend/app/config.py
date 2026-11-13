@@ -114,6 +114,10 @@ if _HAS_PYDANTIC_SETTINGS:
 
         # LLM / embeddings (Gemini is the default provider)
         GEMINI_API_KEY: str = ""
+        # Second Gemini key: used automatically when the primary key is
+        # rate-limited / quota-exhausted (429). Set from a second Google
+        # AI Studio project — never commit a value here.
+        GEMINI_API_KEY_SECONDARY: str = ""
         GEMINI_MODEL: str = "gemini-3.5-flash-lite"
         GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
         # "gemini" | "local" | "hash" | "auto"
@@ -213,6 +217,7 @@ else:
             self.QDRANT_COLLECTION = env("QDRANT_COLLECTION", "adaptive_rag")
             self.QDRANT_TIMEOUT = _env_int("QDRANT_TIMEOUT", 30)
             self.GEMINI_API_KEY = env("GEMINI_API_KEY", "")
+            self.GEMINI_API_KEY_SECONDARY = env("GEMINI_API_KEY_SECONDARY", "")
             self.GEMINI_MODEL = env("GEMINI_MODEL", "gemini-3.5-flash-lite")
             self.GEMINI_EMBEDDING_MODEL = env("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
             self.EMBEDDING_PROVIDER = env("EMBEDDING_PROVIDER", "auto")

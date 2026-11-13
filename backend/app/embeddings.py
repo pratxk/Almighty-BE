@@ -86,21 +86,41 @@ class GeminiEmbeddingFunction:
     <model>:embedContent  with ``x-goog-api-key`` header.
     """
 
-    def __init__(self, api_key: str, model: str, dim: int = DIM_GEMINI):
+    def __init__(self, api_key: str, model: str, dim: int = DIM_GEMINI,
+                 api_key_secondary: str = ""):
         from app.http import make_client
 
         # Proxy handling lives in app.http (see module docstring there).
         self._client = make_client(30.0, base_url="https://generativelanguage.googleapis.com")
         self._api_key = api_key
+        self._api_key_secondary = api_key_secondary
+        self._on_secondary = False
         self._model = model
         self.dim = dim
         self.name = f"gemini/{model}"
+
+    def _switch_to_secondary(self) -> bool:
+        """Switch to the secondary Gemini key, once (sticky).
+
+        A key that hit its daily quota stays exhausted until it
+        resets, so there is no point retrying the primary on the
+        next call either. No-op when no secondary key is set or
+        the switch already happened.
+        """
+        if not self._api_key_secondary or self._on_secondary:
+            return False
+        logger.warning("Gemini embed: primary key exhausted; switching to secondary key")
+        self._api_key = self._api_key_secondary
+        self._on_secondary = True
+        return True
 
     def _embed_one(self, text: str) -> list[float]:
         # Free-tier embedding quota is tight and the evaluator + live
         # traffic can burst past it: retry 429/5xx with backoff (same
         # policy as the LLM client's _post_with_retry) instead of
-        # surfacing a 500 on the first burst.
+        # surfacing a 500 on the first burst. When the active key's
+        # quota is exhausted (429), fall over to the secondary key
+        # once, then give up so callers can degrade gracefully.
         import time
 
         url = (
@@ -113,46 +133,54 @@ class GeminiEmbeddingFunction:
                    # the model natively returns 3072 dims, and truncating
                    # that vector afterwards would throw away signal.
                    "outputDimensionality": self.dim}
-        headers = {"x-goog-api-key": self._api_key, "Content-Type": "application/json"}
-        last_exc = None
-        for attempt in range(1, 5):
-            try:
-                resp = self._client.post(url, headers=headers, json=payload)
-            except Exception as exc:  # transport error: retry like a 503
-                last_exc = exc
-                resp = None
-            if resp is not None and resp.status_code not in (429, 500, 502, 503, 504):
-                resp.raise_for_status()
-                break
-            if attempt == 4:
+        while True:
+            headers = {"x-goog-api-key": self._api_key, "Content-Type": "application/json"}
+            last_exc = None
+            resp = None
+            for attempt in range(1, 5):
+                try:
+                    resp = self._client.post(url, headers=headers, json=payload)
+                except Exception as exc:  # transport error: retry like a 503
+                    last_exc = exc
+                    resp = None
+                if resp is not None and resp.status_code not in (429, 500, 502, 503, 504):
+                    resp.raise_for_status()
+                    break
+                if attempt == 4:
+                    break
+                # Daily-quota 429s carry a huge retry-after (hours):
+                # sleeping through 4 attempts would stall a chat for
+                # minutes. Fail fast for this key — the switch logic
+                # below decides whether the secondary key gets a turn.
+                if resp is not None and resp.status_code == 429:
+                    try:
+                        ra = float(resp.headers.get("retry-after") or 0)
+                    except ValueError:
+                        ra = 0.0
+                    if ra > 300:
+                        logger.warning(
+                            "Gemini embed quota exhausted (retry-after %.0fs); "
+                            "failing fast instead of retrying.", ra)
+                        break
+                wait = 12.0 if attempt == 3 else (5.0 if attempt == 2 else 2.0)
                 if resp is not None:
-                    resp.raise_for_status()
-                raise last_exc  # type: ignore[misc]
-            # Daily-quota 429s carry a huge retry-after (hours): sleeping
-            # through 4 attempts would stall a chat for minutes. Fail fast
-            # instead — callers degrade (BM25/web fallback, clean decline).
-            if resp is not None and resp.status_code == 429:
-                try:
-                    ra = float(resp.headers.get("retry-after") or 0)
-                except ValueError:
-                    ra = 0.0
-                if ra > 300:
-                    logger.warning(
-                        "Gemini embed quota exhausted (retry-after %.0fs); "
-                        "failing fast instead of retrying.", ra)
-                    resp.raise_for_status()
-            wait = 12.0 if attempt == 3 else (5.0 if attempt == 2 else 2.0)
+                    retry_after = resp.headers.get("retry-after")
+                    try:
+                        wait = float(retry_after) if retry_after else wait
+                    except ValueError:
+                        pass
+                wait = min(max(wait, 1.0), 60.0)
+                logger.warning("Gemini embed %s (attempt %d/4); retrying in %.0fs",
+                               resp.status_code if resp is not None else "transport error",
+                               attempt, wait)
+                time.sleep(wait)
+            if resp is not None and resp.status_code not in (429, 500, 502, 503, 504):
+                break  # success
+            if resp is not None and resp.status_code == 429 and self._switch_to_secondary():
+                continue
             if resp is not None:
-                retry_after = resp.headers.get("retry-after")
-                try:
-                    wait = float(retry_after) if retry_after else wait
-                except ValueError:
-                    pass
-            wait = min(max(wait, 1.0), 60.0)
-            logger.warning("Gemini embed %s (attempt %d/4); retrying in %.0fs",
-                           resp.status_code if resp is not None else "transport error",
-                           attempt, wait)
-            time.sleep(wait)
+                resp.raise_for_status()
+            raise last_exc  # type: ignore[misc]
         values = resp.json()["embedding"]["values"]
         vec = np.asarray(values, dtype=float)
         if len(vec) != self.dim:  # pad/truncate defensively to the configured dim
@@ -186,6 +214,7 @@ def get_embedding_function():
             fn = GeminiEmbeddingFunction(
                 settings.GEMINI_API_KEY, settings.GEMINI_EMBEDDING_MODEL,
                 dim=settings.embedding_dim,
+                api_key_secondary=settings.GEMINI_API_KEY_SECONDARY,
             )
             # Probe with a tiny call so a bad key fails fast, at startup,
             # instead of mid-retrieval; fall through to local on failure.

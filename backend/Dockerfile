@@ -10,6 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Presidio needs a spaCy NER model for real PII detection; without it
+# the guardrails silently fall back to regex-only (that is what the
+# live Render deploy reports as pii_engine "regex"). Download the
+# small English model into the image so Presidio runs in production.
+RUN python -m spacy download en_core_web_sm
+
 COPY app ./app
 COPY .env.example ./.env.example
 

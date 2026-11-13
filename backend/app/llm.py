@@ -59,38 +59,71 @@ class GeminiClient:
     _MAX_ATTEMPTS = 4
     _BACKOFF_SECONDS = (2.0, 5.0, 12.0)
 
+    def _switch_to_secondary(self) -> bool:
+        """Switch this client to the secondary Gemini key, once.
+
+        Returns True when a switch happened (sticky for the process:
+        a key that hit its daily quota stays exhausted until it
+        resets, so there is no point retrying the primary on the
+        next call either). No-op when no secondary key is set or
+        the switch already happened.
+        """
+        if not getattr(self, "_api_key_secondary", "") or self._on_secondary:
+            return False
+        logger.warning("Gemini primary key exhausted; switching to secondary key")
+        self._api_key = self._api_key_secondary
+        self._on_secondary = True
+        return True
+
     def _post_with_retry(self, url: str, **kwargs):
         import time
 
-        last_exc = None
-        for attempt in range(1, self._MAX_ATTEMPTS + 1):
-            try:
-                resp = self._client.post(url, **kwargs)
-            except Exception as exc:  # transport error: retry like a 503
-                last_exc = exc
-                resp = None
-            if resp is not None and resp.status_code not in self._RETRYABLE:
-                resp.raise_for_status()
-                return resp
-            if attempt == self._MAX_ATTEMPTS:
-                if resp is not None:
+        while True:
+            last_exc = None
+            last_resp = None
+            for attempt in range(1, self._MAX_ATTEMPTS + 1):
+                try:
+                    resp = self._client.post(url, **kwargs)
+                except Exception as exc:  # transport error: retry like a 503
+                    last_exc = exc
+                    resp = None
+                if resp is not None and resp.status_code not in self._RETRYABLE:
                     resp.raise_for_status()
-                raise last_exc  # type: ignore[misc]
-            retry_after = None
-            if resp is not None:
-                retry_after = resp.headers.get("retry-after")
-            try:
-                wait = float(retry_after) if retry_after else self._BACKOFF_SECONDS[attempt - 1]
-            except ValueError:
-                wait = self._BACKOFF_SECONDS[attempt - 1]
-            wait = min(max(wait, 1.0), 60.0)
-            logger.warning("Gemini %s (attempt %d/%d); retrying in %.0fs",
-                           resp.status_code if resp is not None else "transport error",
-                           attempt, self._MAX_ATTEMPTS, wait)
-            time.sleep(wait)
-        raise last_exc  # pragma: no cover - loop always returns/raises above
+                    return resp
+                if resp is not None:
+                    last_resp = resp
+                if attempt == self._MAX_ATTEMPTS:
+                    break
+                retry_after = None
+                if resp is not None:
+                    retry_after = resp.headers.get("retry-after")
+                try:
+                    wait = float(retry_after) if retry_after else self._BACKOFF_SECONDS[attempt - 1]
+                except ValueError:
+                    wait = self._BACKOFF_SECONDS[attempt - 1]
+                # A daily-quota 429 says "retry in hours": do not burn
+                # the whole backoff ladder on a dead key — fail fast so
+                # the caller can switch keys (or surface the error).
+                if retry_after is not None and wait > 300:
+                    break
+                wait = min(max(wait, 1.0), 60.0)
+                logger.warning("Gemini %s (attempt %d/%d); retrying in %.0fs",
+                               resp.status_code if resp is not None else "transport error",
+                               attempt, self._MAX_ATTEMPTS, wait)
+                time.sleep(wait)
+            # Attempts exhausted for the active key: a 429 means the
+            # key is out of quota — try the secondary key once.
+            if (last_resp is not None and last_resp.status_code == 429
+                    and self._switch_to_secondary()):
+                if isinstance(kwargs.get("headers"), dict):
+                    kwargs["headers"] = {**kwargs["headers"],
+                                         "x-goog-api-key": self._api_key}
+                continue
+            if last_resp is not None:
+                last_resp.raise_for_status()
+            raise last_exc  # type: ignore[misc]
 
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, api_key_secondary: str = ""):
         from app.http import make_client
 
         # Proxy handling lives in app.http: httpx's own env parsing
@@ -98,6 +131,8 @@ class GeminiClient:
         # breaks the opposite way (no direct internet here).
         self._client = make_client(60.0, base_url=GEMINI_API_BASE)
         self._api_key = api_key
+        self._api_key_secondary = api_key_secondary
+        self._on_secondary = False
         self.model = model
 
     def generate(self, prompt: str, system: str | None = None) -> dict:
@@ -144,58 +179,77 @@ class GeminiClient:
             contents.append({"role": "user",
                              "parts": [{"text": f"System instruction: {system}"}]})
         contents.append({"role": "user", "parts": [{"text": prompt}]})
-        headers = {"x-goog-api-key": self._api_key, "Content-Type": "application/json"}
         body = {"contents": contents,
                 "generationConfig": {"maxOutputTokens": settings.MAX_OUTPUT_TOKENS}}
 
         full_parts: list[str] = []
         real: dict[str, Any] = {}
-        for attempt in range(1, self._MAX_ATTEMPTS + 1):
-            try:
-                with self._client.stream("POST", url, headers=headers, json=body) as resp:
-                    if resp.status_code in self._RETRYABLE and not full_parts:
-                        if attempt == self._MAX_ATTEMPTS:
-                            resp.raise_for_status()
-                        wait = self._BACKOFF_SECONDS[attempt - 1]
-                        logger.warning("Gemini stream %s (attempt %d/%d); retrying in %.0fs",
-                                       resp.status_code, attempt, self._MAX_ATTEMPTS, wait)
-                        time.sleep(wait)
-                        continue
-                    resp.raise_for_status()
-                    for line in resp.iter_lines():
-                        if not line or not line.startswith("data:"):
+        # Outer loop runs at most twice: once per Gemini key. A 429
+        # before the first chunk switches to the secondary key and
+        # retries the whole attempt ladder; once chunks have flowed,
+        # errors propagate (the answer is already half-written).
+        while True:
+            switched = False
+            for attempt in range(1, self._MAX_ATTEMPTS + 1):
+                # Rebuilt per attempt so a key switched mid-call is used.
+                headers = {"x-goog-api-key": self._api_key,
+                           "Content-Type": "application/json"}
+                try:
+                    with self._client.stream("POST", url, headers=headers, json=body) as resp:
+                        if resp.status_code in self._RETRYABLE and not full_parts:
+                            if attempt == self._MAX_ATTEMPTS:
+                                if (resp.status_code == 429
+                                        and self._switch_to_secondary()):
+                                    switched = True
+                                    break
+                                resp.raise_for_status()
+                            wait = self._BACKOFF_SECONDS[attempt - 1]
+                            logger.warning("Gemini stream %s (attempt %d/%d); retrying in %.0fs",
+                                           resp.status_code, attempt, self._MAX_ATTEMPTS, wait)
+                            time.sleep(wait)
                             continue
-                        payload = line[5:].strip()
-                        if not payload or payload == "[DONE]":
-                            continue
-                        try:
-                            data = json.loads(payload)
-                        except ValueError:
-                            continue
-                        meta = data.get("usageMetadata") or {}
-                        if meta:
-                            real = {
-                                "prompt_tokens": meta.get("promptTokenCount"),
-                                "completion_tokens": meta.get("candidatesTokenCount"),
-                                "total_tokens": meta.get("totalTokenCount"),
-                            }
-                        candidates = data.get("candidates") or []
-                        parts = (candidates[0].get("content", {}).get("parts", [])
-                                 if candidates else [])
-                        delta = "".join(p.get("text", "") for p in parts)
-                        if delta:
-                            full_parts.append(delta)
-                            yield {"delta": delta}
-                    break
-            except Exception:
-                if full_parts:
-                    raise
-                if attempt == self._MAX_ATTEMPTS:
-                    raise
-                wait = self._BACKOFF_SECONDS[attempt - 1]
-                logger.warning("Gemini stream transport error (attempt %d/%d); retrying in %.0fs",
-                               attempt, self._MAX_ATTEMPTS, wait)
-                time.sleep(wait)
+                        resp.raise_for_status()
+                        for line in resp.iter_lines():
+                            if not line or not line.startswith("data:"):
+                                continue
+                            payload = line[5:].strip()
+                            if not payload or payload == "[DONE]":
+                                continue
+                            try:
+                                data = json.loads(payload)
+                            except ValueError:
+                                continue
+                            meta = data.get("usageMetadata") or {}
+                            if meta:
+                                real = {
+                                    "prompt_tokens": meta.get("promptTokenCount"),
+                                    "completion_tokens": meta.get("candidatesTokenCount"),
+                                    "total_tokens": meta.get("totalTokenCount"),
+                                }
+                            candidates = data.get("candidates") or []
+                            parts = (candidates[0].get("content", {}).get("parts", [])
+                                     if candidates else [])
+                            delta = "".join(p.get("text", "") for p in parts)
+                            if delta:
+                                full_parts.append(delta)
+                                yield {"delta": delta}
+                        break
+                except Exception as exc:
+                    if full_parts:
+                        raise
+                    if attempt == self._MAX_ATTEMPTS:
+                        status = getattr(getattr(exc, "response", None), "status_code", None)
+                        if status == 429 and self._switch_to_secondary():
+                            switched = True
+                            break
+                        raise
+                    wait = self._BACKOFF_SECONDS[attempt - 1]
+                    logger.warning("Gemini stream transport error (attempt %d/%d); retrying in %.0fs",
+                                   attempt, self._MAX_ATTEMPTS, wait)
+                    time.sleep(wait)
+            if switched:
+                continue
+            break
         text = "".join(full_parts).strip()
         yield {"done": True, "text": text, "usage": _usage(prompt, text, real)}
 
@@ -337,7 +391,8 @@ def get_llm_client():
     provider = settings.effective_llm_provider
     try:
         if provider == "gemini":
-            _llm_client = GeminiClient(settings.GEMINI_API_KEY, settings.GEMINI_MODEL)
+            _llm_client = GeminiClient(settings.GEMINI_API_KEY, settings.GEMINI_MODEL,
+                                       api_key_secondary=settings.GEMINI_API_KEY_SECONDARY)
             logger.info("LLM: Gemini %s", settings.GEMINI_MODEL)
         elif provider == "ollama":
             _llm_client = OllamaClient(

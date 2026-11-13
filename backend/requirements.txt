@@ -27,7 +27,7 @@ sentence-transformers>=2.7
 rank-bm25>=0.2.2
 pypdf>=4.0
 python-multipart>=0.0.9
-sqlalchemy>=2.0
+sqlalchemy[asyncio]>=2.0  # [asyncio] pulls in greenlet, required by sqlalchemy.ext.asyncio (db.py) — missing it crashed the Render deploy on startup 2026-11-14
 aiosqlite>=0.20
 httpx>=0.27
 # Web search fallback (Tavily — see app/websearch.py). The SDK is the

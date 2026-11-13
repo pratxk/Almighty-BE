@@ -10,11 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Presidio needs a spaCy NER model for real PII detection; without it
-# the guardrails silently fall back to regex-only (that is what the
-# live Render deploy reports as pii_engine "regex"). Download the
-# small English model into the image so Presidio runs in production.
-RUN python -m spacy download en_core_web_sm
+# NOTE: do NOT install the spaCy model (en_core_web_sm) here. It lets
+# Presidio run, but loading it on Render's 512 MB free tier OOM-kills
+# the container on the first chat request (crashed the live deploy
+# 2026-11-14 ~03:35 IST). Without the model the guardrails run on the
+# regex PII fallback, which is the correct setting for this tier.
+# Presidio needs a bigger instance (2 GB+) to run safely.
 
 COPY app ./app
 COPY .env.example ./.env.example

@@ -1,0 +1,19 @@
+# Python Async/Await, FastAPI, and Concurrency
+
+## Why Async Exists
+
+Most programs spend much of their time waiting: waiting for a database query, waiting for an HTTP response, waiting for a file to load. In synchronous code, the thread blocks during that wait and does nothing useful. Asynchronous programming in Python lets a single thread switch to other work while it waits, so one process can handle many concurrent operations without the overhead of threads or processes. The keywords are `async` and `await`: you mark a function with `async def`, and inside it you use `await` on operations that wait, which yields control back to the event loop until the result is ready.
+
+The event loop is the heart of asyncio, Python's built-in async library. It keeps a queue of tasks, runs each one until it hits an `await`, then switches to another task that is ready. This cooperative model is efficient, but it has one rule that matters enormously: never block the event loop. A long CPU-bound calculation or a synchronous network call inside an async function freezes every other task, because the loop cannot switch away until the blocking call returns. CPU-heavy work belongs in a thread pool or process pool, using `asyncio.to_thread` or `run_in_executor`, while I/O-bound work uses async libraries such as `httpx` and `asyncpg`.
+
+## FastAPI
+
+FastAPI is a modern Python web framework built on Starlette and Pydantic, and it is designed around async from the start. You declare a route with `async def` and FastAPI runs it on the event loop; declare it with a plain `def` and FastAPI runs it in a thread pool instead. This matters for performance: an async endpoint that awaits a database call can serve thousands of concurrent requests on a single process, while a blocking endpoint ties up a thread for every request.
+
+FastAPI's other strengths are developer experience and correctness. Request and response bodies are declared as Pydantic models, so FastAPI validates incoming JSON automatically and returns a clear 422 error when a field is missing or has the wrong type. It generates interactive OpenAPI documentation at `/docs` for free, and its dependency injection system — `Depends()` — makes it easy to share database sessions, authentication checks, and configuration across routes. For a RAG backend, FastAPI is a natural fit: chat endpoints are I/O-bound, streaming responses with server-sent events fit its async model, and Pydantic models keep the API contract explicit.
+
+## Concurrency Patterns
+
+Three patterns cover most async work. First, `asyncio.gather` runs several awaitables concurrently and waits for all of them, which is ideal for fan-out: fetching from a vector database and a keyword index at the same time, or calling several tools in parallel. Second, `asyncio.create_task` starts a background task that runs independently, useful for fire-and-forget work such as logging a run trace. Third, semaphores and queues bound concurrency: a semaphore limits how many requests hit a rate-limited API at once, and a queue lets producer tasks feed consumer tasks at a controlled pace.
+
+Common mistakes are worth naming. Forgetting `await` returns a coroutine object instead of a result and silently does nothing. Mixing synchronous libraries — `requests`, `time.sleep`, a blocking database driver — into async code stalls the loop. Sharing mutable state between tasks without locks invites race conditions, though in practice most async bugs are ordering bugs: code that assumes task A finishes before task B. The remedy is the same as elsewhere in software: keep shared state minimal, await explicitly, test with realistic latency, and measure. Async does not make code faster; it makes waiting cheaper, and that is exactly what network-heavy services such as RAG backends need.

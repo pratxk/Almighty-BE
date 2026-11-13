@@ -1,0 +1,322 @@
+[
+  {
+    "id": "hotpot-01",
+    "question": "What government position was held by the woman who portrayed Corliss Archer in the film Kiss and Tell?",
+    "expected_answer": "Chief of Protocol",
+    "expected_keywords": [
+      "chief",
+      "protocol"
+    ],
+    "source_doc": "kiss-and-tell-1945-film-ff86d101.md",
+    "source_docs": [
+      "kiss-and-tell-1945-film-ff86d101.md",
+      "shirley-temple-a40e4863.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-02",
+    "question": "What science fantasy young adult series, told in first person, has a set of companion books narrating the stories of enslaved worlds and alien species?",
+    "expected_answer": "Animorphs",
+    "expected_keywords": [
+      "animorphs"
+    ],
+    "source_doc": "the-hork-bajir-chronicles-a8ba5df3.md",
+    "source_docs": [
+      "the-hork-bajir-chronicles-a8ba5df3.md",
+      "animorphs-b1b58853.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-03",
+    "question": "The director of the romantic comedy \"Big Stone Gap\" is based in what New York city?",
+    "expected_answer": "Greenwich Village, New York City",
+    "expected_keywords": [
+      "greenwich",
+      "village",
+      "york",
+      "city"
+    ],
+    "source_doc": "big-stone-gap-film-3d769379.md",
+    "source_docs": [
+      "big-stone-gap-film-3d769379.md",
+      "adriana-trigiani-a4540b76.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-04",
+    "question": "2014 S/S is the debut album of a South Korean boy group that was formed by who?",
+    "expected_answer": "YG Entertainment",
+    "expected_keywords": [
+      "entertainment"
+    ],
+    "source_doc": "2014-s-s-89a74ad6.md",
+    "source_docs": [
+      "2014-s-s-89a74ad6.md",
+      "winner-band-e09f7fb8.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-05",
+    "question": "Who was known by his stage name Aladin and helped organizations improve their performance as a consultant?",
+    "expected_answer": "Eenasul Fateh",
+    "expected_keywords": [
+      "eenasul",
+      "fateh"
+    ],
+    "source_doc": "eenasul-fateh-b543a860.md",
+    "source_docs": [
+      "eenasul-fateh-b543a860.md",
+      "management-consulting-9b39df22.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-06",
+    "question": "The arena where the Lewiston Maineiacs played their home games can seat how many people?",
+    "expected_answer": "3,677 seated",
+    "expected_keywords": [
+      "seated"
+    ],
+    "source_doc": "lewiston-maineiacs-010c0625.md",
+    "source_docs": [
+      "lewiston-maineiacs-010c0625.md",
+      "androscoggin-bank-colis-e-273a22cc.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-07",
+    "question": "Who is older, Annie Morton or Terry Richardson?",
+    "expected_answer": "Terry Richardson",
+    "expected_keywords": [
+      "terry",
+      "richardson"
+    ],
+    "source_doc": "annie-morton-5542e5bb.md",
+    "source_docs": [
+      "annie-morton-5542e5bb.md",
+      "terry-richardson-e78a5e8b.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-08",
+    "question": "What is the name of the fight song of the university whose main campus is in Lawrence, Kansas and whose branch campuses are in the Kansas City metropolitan area?",
+    "expected_answer": "Kansas Song",
+    "expected_keywords": [
+      "kansas",
+      "song"
+    ],
+    "source_doc": "kansas-song-a2f690a5.md",
+    "source_docs": [
+      "kansas-song-a2f690a5.md",
+      "university-of-kansas-a5fcdf14.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-09",
+    "question": "What screenwriter with credits for \"Evolution\" co-wrote a film starring Nicolas Cage and Téa Leoni?",
+    "expected_answer": "David Weissman",
+    "expected_keywords": [
+      "david",
+      "weissman"
+    ],
+    "source_doc": "david-weissman-1c93a8fe.md",
+    "source_docs": [
+      "david-weissman-1c93a8fe.md",
+      "the-family-man-53286753.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-10",
+    "question": "What year did Guns N Roses perform a promo for a movie starring Arnold Schwarzenegger as a former New York Police detective?",
+    "expected_answer": "1999",
+    "expected_keywords": [
+      "1999"
+    ],
+    "source_doc": "oh-my-god-guns-n-roses-song-e14cd3da.md",
+    "source_docs": [
+      "oh-my-god-guns-n-roses-song-e14cd3da.md",
+      "end-of-days-film-10337b40.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-11",
+    "question": "The football manager who recruited David Beckham managed Manchester United during what timeframe?",
+    "expected_answer": "from 1986 to 2013",
+    "expected_keywords": [
+      "1986",
+      "2013"
+    ],
+    "source_doc": "1995-96-manchester-united-f-c-season-52d1a17e.md",
+    "source_docs": [
+      "1995-96-manchester-united-f-c-season-52d1a17e.md",
+      "alex-ferguson-f4ec086e.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-12",
+    "question": "Brown State Fishing Lake is in a country that has a population of how many inhabitants ?",
+    "expected_answer": "9,984",
+    "expected_keywords": [],
+    "source_doc": "brown-state-fishing-lake-536a2f46.md",
+    "source_docs": [
+      "brown-state-fishing-lake-536a2f46.md",
+      "brown-county-kansas-eb5e8078.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-13",
+    "question": "The Vermont Catamounts men's soccer team currently competes in a conference that was formerly known as what from 1988 to 1996?",
+    "expected_answer": "the North Atlantic Conference",
+    "expected_keywords": [
+      "north",
+      "atlantic",
+      "conference"
+    ],
+    "source_doc": "vermont-catamounts-men-s-soccer-37bc942d.md",
+    "source_docs": [
+      "vermont-catamounts-men-s-soccer-37bc942d.md",
+      "america-east-conference-428aa91c.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-14",
+    "question": "Roger O. Egeberg was Assistant Secretary for Health and Scientific Affairs during the administration of a president that served during what years?",
+    "expected_answer": "1969 until 1974",
+    "expected_keywords": [
+      "1969",
+      "until",
+      "1974"
+    ],
+    "source_doc": "roger-o-egeberg-54c630d9.md",
+    "source_docs": [
+      "roger-o-egeberg-54c630d9.md",
+      "richard-nixon-06c1020d.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-15",
+    "question": "Which writer was from England, Henry Roth or Robert Erskine Childers?",
+    "expected_answer": "Robert Erskine Childers DSC",
+    "expected_keywords": [
+      "robert",
+      "erskine",
+      "childers"
+    ],
+    "source_doc": "henry-roth-a507d075.md",
+    "source_docs": [
+      "henry-roth-a507d075.md",
+      "robert-erskine-childers-63a38caa.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "comparison"
+  },
+  {
+    "id": "hotpot-16",
+    "question": "Which other Mexican Formula One race car driver has held the podium besides the Force India driver born in 1990?",
+    "expected_answer": "Pedro Rodríguez",
+    "expected_keywords": [
+      "pedro",
+      "rodr",
+      "guez"
+    ],
+    "source_doc": "formula-one-drivers-from-mexico-25c9c605.md",
+    "source_docs": [
+      "formula-one-drivers-from-mexico-25c9c605.md",
+      "sergio-p-rez-be80412e.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-17",
+    "question": "This singer of A Rather Blustery Day also voiced what hedgehog?",
+    "expected_answer": "Sonic",
+    "expected_keywords": [
+      "sonic"
+    ],
+    "source_doc": "a-rather-blustery-day-788e4aeb.md",
+    "source_docs": [
+      "a-rather-blustery-day-788e4aeb.md",
+      "jim-cummings-83c5ab7c.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-18",
+    "question": "Aside from the Apple Remote, what other device can control the program Apple Remote was originally designed to interact with?",
+    "expected_answer": "keyboard function keys",
+    "expected_keywords": [
+      "keyboard",
+      "function",
+      "keys"
+    ],
+    "source_doc": "apple-remote-d311d498.md",
+    "source_docs": [
+      "apple-remote-d311d498.md",
+      "front-row-software-a35f643f.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  },
+  {
+    "id": "hotpot-19",
+    "question": "Which performance act has a higher instrument to person ratio, Badly Drawn Boy or Wolf Alice? ",
+    "expected_answer": "Badly Drawn Boy",
+    "expected_keywords": [
+      "badly",
+      "drawn"
+    ],
+    "source_doc": "badly-drawn-boy-5256e364.md",
+    "source_docs": [
+      "badly-drawn-boy-5256e364.md",
+      "wolf-alice-5f8cd7ff.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "comparison"
+  },
+  {
+    "id": "hotpot-20",
+    "question": "What was the father of Kasper Schmeichel voted to be by the IFFHS in 1992?",
+    "expected_answer": "World's Best Goalkeeper",
+    "expected_keywords": [
+      "world",
+      "best",
+      "goalkeeper"
+    ],
+    "source_doc": "kasper-schmeichel-2183f833.md",
+    "source_docs": [
+      "kasper-schmeichel-2183f833.md",
+      "peter-schmeichel-3d5c7878.md"
+    ],
+    "benchmark": "hotpotqa",
+    "qtype": "bridge"
+  }
+]

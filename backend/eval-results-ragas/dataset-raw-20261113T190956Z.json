@@ -1,0 +1,54 @@
+{
+  "dataset": "dataset",
+  "api_url": "http://localhost:8001",
+  "collected_at": "20261113T190956Z",
+  "samples": [
+    {
+      "id": "rag-01",
+      "question": "What problem does RAG solve?",
+      "answer": "I couldn't find relevant information in the ingested documents to answer that. Try rephrasing, or ingest documents on the topic.\n\nNote: I could not verify this answer against the retrieved documents, so treat it with caution.",
+      "contexts": [],
+      "ground_truth": "RAG addresses the fact that large language models have a training cutoff and sometimes hallucinate false facts. It gives the model relevant documents at answer time, so answers are grounded in retrieved passages instead of relying only on memorised training data. This makes answers more accurate, more up to date, and verifiable against their sources.",
+      "expected_keywords": [
+        "hallucinate",
+        "retrieval",
+        "grounded",
+        "training cutoff"
+      ],
+      "route": "retrieve",
+      "confidence": 0.0,
+      "latency_s": 124.7,
+      "retrieval_hit_rate": 0.0,
+      "faithfulness_keyword": 0.0,
+      "faithfulness_words": 0.0,
+      "num_sources": 0
+    },
+    {
+      "id": "rag-02",
+      "question": "What are the three stages of a basic RAG pipeline?",
+      "answer": "Based on the provided context, the three stages of a basic RAG pipeline are:\n\n1. **Ingestion**: Documents are split into chunks, each chunk is converted into an embedding, and the chunks and embeddings are stored in a vector database [2]. **Retrieval**: A user question is embedded in the same way, and the database returns the chunks whose embeddings are closest to the question embedding [2]. 3. **Generation**: The retrieved chunks are placed into the language model's prompt as context, and the model writes an answer based on that context [2].",
+      "contexts": [
+        "# Adaptive RAG: Routing, Grading, Rewriting, and Self-Correction ## Why Basic RAG Is Not Enough A basic RAG pipeline retrieves the same way for every question: embed the query, fetch the top-k chunks, and generate. That works for straightforward factual questions, but it fails in predictable ways. A vague question retrieves vague chunks. A question about a topic the documents do not cover still gets an answer, because the model fills the gap with hallucinated text. A multi-part question needs several kinds of evidence, but a single retrieval pass returns only one slice. Adaptive RAG fixes this by making the pipeline inspect its own work and change strategy as it goes: route the query, grade what was retrieved, rewrite the query when retrieval is weak, and check the final answer against the",
+        "A basic RAG pipeline has three stages. First, ingestion: documents are split into chunks, each chunk is converted into an embedding, and the chunks and embeddings are stored in a vector database. Second, retrieval: a user question is embedded the same way, and the database returns the chunks whose embeddings are closest to the question embedding. Third, generation: the retrieved chunks are placed into the language model's prompt as context, and the model writes an answer based on that context. ## Embeddings and Vector Search",
+        "Vector search is the process of finding the nearest vectors to a query vector. Vector databases such as Qdrant, Pinecone, and pgvector are built for this: they index millions of vectors with approximate nearest neighbour algorithms such as HNSW, so a search that would take seconds with a brute-force scan returns in milliseconds. The quality of retrieval depends heavily on chunking. Chunks that are too large dilute the meaning and waste context; chunks that are too small lose the surrounding explanation. A common starting point is chunks of 500 to 1,000 characters with a small overlap of 100 to 200 characters, so a sentence split across a boundary is not lost. ## Hybrid Search and Reranking",
+        "Retrieval usually fetches more candidates than the model needs — for example, the top 20 chunks — and then a reranking step reorders them. A reranker is a small cross-encoder model that scores each query-chunk pair directly, which is more accurate than comparing precomputed embeddings but too slow to run over the whole database. Reranking typically keeps the best 3 to 5 chunks for the final prompt. Together, hybrid search and reranking are the cheapest way to improve RAG answer quality: they fix retrieval errors before the language model ever sees the context, and a model given the right context rarely needs to be a bigger model.",
+        "Self-correction is the final safety net. After the model drafts an answer, a grounding check compares every claim in the answer against the retrieved sources. One practical method is to split the answer into sentences and check whether each sentence shares evidence with at least one source chunk; a sentence with no supporting source is flagged as a possible hallucination. When the check fails, the pipeline can retry generation with stricter instructions, retrieve more context, or return the answer with a warning that parts of it are unsupported. A related check is answer relevance: does the answer actually address the question that was asked, or did the model drift into summarising the context? Together these checks turn RAG from a hopeful pipeline into an auditable one: every answer can b"
+      ],
+      "ground_truth": "The three stages are ingestion, retrieval, and generation. In ingestion, documents are split into chunks, embedded, and stored in a vector database. In retrieval, the question is embedded and the closest chunks are returned, and in generation those chunks are placed in the prompt so the model writes an answer based on them.",
+      "expected_keywords": [
+        "ingestion",
+        "retrieval",
+        "generation",
+        "chunks",
+        "embedding"
+      ],
+      "route": "retrieve",
+      "confidence": 0.368,
+      "latency_s": 1.3,
+      "retrieval_hit_rate": 1.0,
+      "faithfulness_keyword": 0.6,
+      "faithfulness_words": 1.0,
+      "num_sources": 5
+    }
+  ]
+}

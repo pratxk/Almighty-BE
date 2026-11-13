@@ -1,0 +1,65 @@
+# Adaptive RAG — docker compose
+# Usage: copy .env.example to backend/.env, add GEMINI_API_KEY, then:
+#   docker compose up --build
+# Frontend: http://localhost:3000   Backend: http://localhost:8000
+# Qdrant dashboard: http://localhost:6333/dashboard   Jaeger: http://localhost:16686
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"
+      - "4318:4318"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - backend/.env
+    depends_on:
+      - qdrant
+      - redis
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: sqlite+aiosqlite:///./adaptive_rag.db
+      # Gemini is the default LLM + embeddings provider (free tier, Google AI Studio).
+      # Set GEMINI_API_KEY in backend/.env; the backend reads it from there.
+      # No key? The backend runs in degraded/demo mode (retrieval + grading
+      # work; generation falls back to extractive passages and says so).
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+      GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-text-embedding-004}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-gemini}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      - backend
+
+volumes:
+  qdrant_data:
+  redis_data:

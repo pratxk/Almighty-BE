@@ -1,0 +1,219 @@
+[
+  {
+    "id": "squad-01",
+    "question": "Which NFL team represented the AFC at Super Bowl 50?",
+    "expected_answer": "Denver Broncos",
+    "expected_keywords": [
+      "denver",
+      "broncos"
+    ],
+    "source_doc": "super-bowl-50-01.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-02",
+    "question": "Which NFL team represented the NFC at Super Bowl 50?",
+    "expected_answer": "Carolina Panthers",
+    "expected_keywords": [
+      "carolina",
+      "panthers"
+    ],
+    "source_doc": "super-bowl-50-02.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-03",
+    "question": "Where did Super Bowl 50 take place?",
+    "expected_answer": "Santa Clara, California",
+    "expected_keywords": [
+      "santa",
+      "clara",
+      "california"
+    ],
+    "source_doc": "super-bowl-50-03.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-04",
+    "question": "Which NFL team won Super Bowl 50?",
+    "expected_answer": "Denver Broncos",
+    "expected_keywords": [
+      "denver",
+      "broncos"
+    ],
+    "source_doc": "super-bowl-50-04.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-05",
+    "question": "What color was used to emphasize the 50th anniversary of the Super Bowl?",
+    "expected_answer": "gold",
+    "expected_keywords": [
+      "gold"
+    ],
+    "source_doc": "super-bowl-50-05.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-06",
+    "question": "What was the theme of Super Bowl 50?",
+    "expected_answer": "\"golden anniversary\"",
+    "expected_keywords": [
+      "golden",
+      "anniversary"
+    ],
+    "source_doc": "super-bowl-50-06.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-07",
+    "question": "What day was the game played on?",
+    "expected_answer": "February 7, 2016",
+    "expected_keywords": [
+      "february",
+      "2016"
+    ],
+    "source_doc": "super-bowl-50-07.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-08",
+    "question": "What is the AFC short for?",
+    "expected_answer": "American Football Conference",
+    "expected_keywords": [
+      "american",
+      "football",
+      "conference"
+    ],
+    "source_doc": "super-bowl-50-08.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-09",
+    "question": "What was the theme of Super Bowl 50?",
+    "expected_answer": "\"golden anniversary\"",
+    "expected_keywords": [
+      "golden",
+      "anniversary"
+    ],
+    "source_doc": "super-bowl-50-09.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-10",
+    "question": "What does AFC stand for?",
+    "expected_answer": "American Football Conference",
+    "expected_keywords": [
+      "american",
+      "football",
+      "conference"
+    ],
+    "source_doc": "super-bowl-50-10.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-11",
+    "question": "What day was the Super Bowl played on?",
+    "expected_answer": "February 7, 2016",
+    "expected_keywords": [
+      "february",
+      "2016"
+    ],
+    "source_doc": "super-bowl-50-11.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-12",
+    "question": "Who won Super Bowl 50?",
+    "expected_answer": "Denver Broncos",
+    "expected_keywords": [
+      "denver",
+      "broncos"
+    ],
+    "source_doc": "super-bowl-50-12.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-13",
+    "question": "What venue did Super Bowl 50 take place in?",
+    "expected_answer": "Levi's Stadium",
+    "expected_keywords": [
+      "levi",
+      "stadium"
+    ],
+    "source_doc": "super-bowl-50-13.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-14",
+    "question": "What city did Super Bowl 50 take place in?",
+    "expected_answer": "Santa Clara",
+    "expected_keywords": [
+      "santa",
+      "clara"
+    ],
+    "source_doc": "super-bowl-50-14.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-15",
+    "question": "If Roman numerals were used, what would Super Bowl 50 have been called?",
+    "expected_answer": "Super Bowl L",
+    "expected_keywords": [
+      "super",
+      "bowl"
+    ],
+    "source_doc": "super-bowl-50-15.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-16",
+    "question": "Super Bowl 50 decided the NFL champion for what season?",
+    "expected_answer": "2015",
+    "expected_keywords": [
+      "2015"
+    ],
+    "source_doc": "super-bowl-50-16.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-17",
+    "question": "What year did the Denver Broncos secure a Super Bowl title for the third time?",
+    "expected_answer": "2015",
+    "expected_keywords": [
+      "2015"
+    ],
+    "source_doc": "super-bowl-50-17.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-18",
+    "question": "What city did Super Bowl 50 take place in?",
+    "expected_answer": "Santa Clara",
+    "expected_keywords": [
+      "santa",
+      "clara"
+    ],
+    "source_doc": "super-bowl-50-18.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-19",
+    "question": "What stadium did Super Bowl 50 take place in?",
+    "expected_answer": "Levi's Stadium",
+    "expected_keywords": [
+      "levi",
+      "stadium"
+    ],
+    "source_doc": "super-bowl-50-19.md",
+    "benchmark": "squad"
+  },
+  {
+    "id": "squad-20",
+    "question": "What was the final score of Super Bowl 50? ",
+    "expected_answer": "24–10",
+    "expected_keywords": [],
+    "source_doc": "super-bowl-50-20.md",
+    "benchmark": "squad"
+  }
+]

@@ -29,6 +29,8 @@ pypdf>=4.0
 python-multipart>=0.0.9
 sqlalchemy[asyncio]>=2.0  # [asyncio] pulls in greenlet, required by sqlalchemy.ext.asyncio (db.py) — missing it crashed the Render deploy on startup 2026-11-14
 aiosqlite>=0.20
+asyncpg>=0.29  # Postgres driver for DATABASE_URL=postgresql+asyncpg://... (Supabase)
+rq>=1.15  # Redis Queue: background ingest jobs (see app/jobs.py)
 httpx>=0.27
 # Web search fallback (Tavily — see app/websearch.py). The SDK is the
 # primary path; a raw httpx POST is the fallback when it is absent.

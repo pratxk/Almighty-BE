@@ -99,12 +99,17 @@ def _stats(text: str, chunks: list[str], chunk_size: int, chunk_overlap: int) ->
 async def ingest_text(title: str, text: str, source: str,
                       chunk_size: int = CHUNK_SIZE,
                       chunk_overlap: int = CHUNK_OVERLAP,
-                      access_roles=None) -> dict:
+                      access_roles=None, on_progress=None) -> dict:
     """Chunk + embed + store text. Returns {document_id, ..., stats}.
 
     ``access_roles`` tags the document for guardrails (e.g. ["exec"]):
     only those roles may retrieve its chunks. None means public
     (["employee"]) — see guardrails.normalize_roles.
+
+    ``on_progress`` is an optional async callback the background worker
+    passes in: ``await on_progress(stage, done_chunks, total_chunks)``
+    at each stage ("chunked", "embedded", "stored"), so the job row can
+    report real progress. It is never called for a direct (sync) ingest.
     """
     from app.guardrails import normalize_roles
 
@@ -112,6 +117,8 @@ async def ingest_text(title: str, text: str, source: str,
     chunks = chunk_text(text, chunk_size, chunk_overlap)
     if not chunks:
         raise ValueError("No text could be extracted to ingest.")
+    if on_progress is not None:
+        await on_progress("chunked", 0, len(chunks))
     # Embed BEFORE creating the DB row, and verify the dimension: the
     # embedding function can silently fall back (e.g. Gemini 429 ->
     # 384-dim hash) while the Qdrant collection was created at the
@@ -119,6 +126,8 @@ async def ingest_text(title: str, text: str, source: str,
     # raw Qdrant 400 *after* the document row was written, leaving
     # docs in the DB/BM25 with no vectors. Fail fast instead.
     vectors = embed_texts(chunks)
+    if on_progress is not None:
+        await on_progress("embedded", len(chunks), len(chunks))
     store = get_vector_store()
     if store.mode == "qdrant" and vectors and len(vectors[0]) != store.dim:
         raise ValueError(
@@ -136,6 +145,8 @@ async def ingest_text(title: str, text: str, source: str,
           "document_id": doc["id"], "metadata": {"access_roles": roles}}
          for i, c in enumerate(chunks)],
         vectors)
+    if on_progress is not None:
+        await on_progress("stored", len(chunks), len(chunks))
     logger.info("Ingested %s: %d chunks, %d chars (~%d tokens) from %s "
                 "(access_roles=%s)",
                 title, len(chunks), len(text), estimate_tokens(text), source,
@@ -159,9 +170,10 @@ async def ingest_file(path: str | Path, source_name: str | None = None,
                              access_roles=access_roles)
 
 
-async def ingest_url(url: str, chunk_size: int = CHUNK_SIZE,
-                     chunk_overlap: int = CHUNK_OVERLAP,
-                     access_roles=None) -> dict:
+async def fetch_url_text(url: str) -> tuple[str, str]:
+    """Fetch a URL and return (title, plain text). Split out of
+    ``ingest_url`` so the background worker can fetch first and then
+    run the (progress-reporting) ingest step itself."""
     from app.http import make_async_client
 
     async with make_async_client(30.0, base_url=url, follow_redirects=True) as client:
@@ -171,7 +183,14 @@ async def ingest_url(url: str, chunk_size: int = CHUNK_SIZE,
     title_match = re.search(r"<title[^>]*>(.*?)</title>", raw,
                             flags=re.DOTALL | re.IGNORECASE)
     title = html.unescape(title_match.group(1)).strip() if title_match else url
-    return await ingest_text(title=title, text=extract_text_from_html(raw),
+    return title, extract_text_from_html(raw)
+
+
+async def ingest_url(url: str, chunk_size: int = CHUNK_SIZE,
+                     chunk_overlap: int = CHUNK_OVERLAP,
+                     access_roles=None) -> dict:
+    title, text = await fetch_url_text(url)
+    return await ingest_text(title=title, text=text,
                              source=url, chunk_size=chunk_size,
                              chunk_overlap=chunk_overlap,
                              access_roles=access_roles)

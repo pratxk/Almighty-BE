@@ -10,7 +10,6 @@ import asyncio
 import json
 import logging
 import queue
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -22,12 +21,12 @@ from pydantic import BaseModel, Field
 
 from app.cache import build_cached_trace, get_response_cache
 from app.config import settings
-from app.db import (create_conversation, delete_document, get_conversation_by_run,
-                    get_corpus_stats, get_document, init_db, list_conversations,
-                    list_documents)
+from app.db import (create_conversation, create_job, delete_document,
+                    get_conversation_by_run, get_corpus_stats, get_document,
+                    get_job, init_db, list_conversations, list_documents,
+                    list_jobs, update_job)
 from app.graph import run_adaptive_rag, run_adaptive_rag_stream
 from app.guardrails import guardrail_status, normalize_roles
-from app.ingestion import ingest_file, ingest_url
 from app.run_store import get_run_trace, save_run_trace
 from app.tracing import setup_tracing
 from app.vectorstore import get_vector_store
@@ -315,27 +314,80 @@ async def get_run(run_id: str) -> dict:
     raise HTTPException(status_code=404, detail=f"No run trace found for id: {run_id}")
 
 
-@app.post("/api/ingest")
+@app.post("/api/ingest", status_code=202)
 async def ingest(file: UploadFile = File(...),
                  access_roles: str | None = Form(None)) -> dict:
-    """Ingest a file. ``access_roles`` is an optional JSON list or
+    """Queue a file ingest. ``access_roles`` is an optional JSON list or
     comma-separated string (e.g. ["exec"] or "hr,exec") tagging the
-    document for guardrails; omitted means public (["employee"])."""
+    document for guardrails; omitted means public (["employee"]).
+
+    Returns 202 straight away with ``{job_id, status: "queued"}`` —
+    the slow work (extract, chunk, embed) runs in the RQ worker. Poll
+    ``GET /api/jobs/{job_id}`` for progress; the document appears in
+    ``GET /api/documents`` once the job is done.
+    """
+    from app.db import create_job
+    from app.jobs import enqueue_ingest_job
+
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in (".pdf", ".txt", ".md", ".markdown"):
         raise HTTPException(status_code=400,
                             detail=f"Unsupported file type: {suffix} (use .pdf, .txt or .md)")
     data = await file.read()
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(data)
-        tmp_path = tmp.name
+    roles = normalize_roles(_parse_roles_field(access_roles))
+    job = await create_job(kind="file", title=Path(file.filename or "upload").stem,
+                           source=file.filename or "upload",
+                           file_data=data, file_name=file.filename or "",
+                           meta={"access_roles": roles})
     try:
-        return await ingest_file(tmp_path, source_name=file.filename,
-                                 access_roles=_parse_roles_field(access_roles))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
+        enqueue_ingest_job(job["job_id"])
+    except Exception as exc:  # noqa: BLE001 - queue down: fail loudly, not silently
+        logger.exception("Could not enqueue ingest job %s: %s", job["job_id"], exc)
+        await update_job(job["job_id"], status="failed",
+                         error="Ingest queue is unavailable; please try again.")
+        raise HTTPException(status_code=503,
+                            detail="Ingest queue is unavailable; please try again.")
+    return {"job_id": job["job_id"], "status": "queued",
+            "title": job["title"], "kind": "file"}
+
+
+@app.post("/api/ingest-url", status_code=202)
+async def ingest_url_endpoint(req: IngestUrlRequest) -> dict:
+    """Queue a URL ingest. Returns 202 with ``{job_id, status}`` —
+    same polling contract as file ingest (see above)."""
+    from app.db import create_job
+    from app.jobs import enqueue_ingest_job
+
+    url = (req.url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400,
+                            detail="URL must start with http:// or https://")
+    roles = normalize_roles(req.access_roles)
+    job = await create_job(kind="url", title=url, source=url,
+                           meta={"access_roles": roles})
+    try:
+        enqueue_ingest_job(job["job_id"])
+    except Exception as exc:  # noqa: BLE001 - queue down: fail loudly, not silently
+        logger.exception("Could not enqueue URL ingest job %s: %s", job["job_id"], exc)
+        await update_job(job["job_id"], status="failed",
+                         error="Ingest queue is unavailable; please try again.")
+        raise HTTPException(status_code=503,
+                            detail="Ingest queue is unavailable; please try again.")
+    return {"job_id": job["job_id"], "status": "queued",
+            "title": url, "kind": "url"}
+
+
+@app.get("/api/jobs/{job_id}")
+async def get_job_endpoint(job_id: str) -> dict:
+    job = await get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"No ingest job: {job_id}")
+    return job
+
+
+@app.get("/api/jobs")
+async def list_jobs_endpoint(limit: int = 50) -> dict:
+    return {"jobs": await list_jobs(limit=max(1, min(limit, 200)))}
 
 
 def _parse_roles_field(raw: str | None):
@@ -351,16 +403,6 @@ def _parse_roles_field(raw: str | None):
     except (json.JSONDecodeError, TypeError):
         pass
     return raw
-
-
-@app.post("/api/ingest-url")
-async def ingest_url_endpoint(req: IngestUrlRequest) -> dict:
-    try:
-        return await ingest_url(req.url,
-                                access_roles=normalize_roles(req.access_roles)
-                                if req.access_roles is not None else None)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Could not ingest URL: {exc}")
 
 
 @app.get("/api/documents")

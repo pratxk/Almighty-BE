@@ -114,27 +114,19 @@ class GeminiEmbeddingFunction:
         self._on_secondary = True
         return True
 
-    def _embed_one(self, text: str) -> list[float]:
-        # Free-tier embedding quota is tight and the evaluator + live
-        # traffic can burst past it: retry 429/5xx with backoff (same
-        # policy as the LLM client's _post_with_retry) instead of
-        # surfacing a 500 on the first burst. When the active key's
-        # quota is exhausted (429), fall over to the secondary key
-        # once, then give up so callers can degrade gracefully.
+    def _post_with_retry(self, url: str, payload: dict):
+        """POST with the retry policy shared by single and batch embeds.
+
+        Retries 429/5xx with backoff (2s, 5s, 12s). A daily-quota 429
+        whose retry-after is hours fails fast so the caller can switch
+        keys instead of sleeping through the ladder. Returns the
+        successful response, or raises the last error.
+        """
         import time
 
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self._model}:embedContent"
-        )
-        payload = {"model": f"models/{self._model}",
-                   "content": {"parts": [{"text": text}]},
-                   # Ask for exactly the configured dim (768 by default):
-                   # the model natively returns 3072 dims, and truncating
-                   # that vector afterwards would throw away signal.
-                   "outputDimensionality": self.dim}
         while True:
-            headers = {"x-goog-api-key": self._api_key, "Content-Type": "application/json"}
+            headers = {"x-goog-api-key": self._api_key,
+                       "Content-Type": "application/json"}
             last_exc = None
             resp = None
             for attempt in range(1, 5):
@@ -148,10 +140,6 @@ class GeminiEmbeddingFunction:
                     break
                 if attempt == 4:
                     break
-                # Daily-quota 429s carry a huge retry-after (hours):
-                # sleeping through 4 attempts would stall a chat for
-                # minutes. Fail fast for this key — the switch logic
-                # below decides whether the secondary key gets a turn.
                 if resp is not None and resp.status_code == 429:
                     try:
                         ra = float(resp.headers.get("retry-after") or 0)
@@ -175,15 +163,17 @@ class GeminiEmbeddingFunction:
                                attempt, wait)
                 time.sleep(wait)
             if resp is not None and resp.status_code not in (429, 500, 502, 503, 504):
-                break  # success
+                return resp  # success
             if resp is not None and resp.status_code == 429 and self._switch_to_secondary():
                 continue
             if resp is not None:
                 resp.raise_for_status()
             raise last_exc  # type: ignore[misc]
-        values = resp.json()["embedding"]["values"]
+
+    def _normalize(self, values: list[float]) -> list[float]:
+        """Pad/truncate to the configured dim and L2-normalise."""
         vec = np.asarray(values, dtype=float)
-        if len(vec) != self.dim:  # pad/truncate defensively to the configured dim
+        if len(vec) != self.dim:
             out = np.zeros(self.dim, dtype=float)
             out[: min(self.dim, len(vec))] = vec[: min(self.dim, len(vec))]
             vec = out
@@ -192,8 +182,63 @@ class GeminiEmbeddingFunction:
             vec = vec / norm
         return vec.tolist()
 
+    def _embed_one(self, text: str) -> list[float]:
+        # Free-tier embedding quota is tight and the evaluator + live
+        # traffic can burst past it: _post_with_retry handles the
+        # 429/5xx backoff and the secondary-key fallover.
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self._model}:embedContent"
+        )
+        payload = {"model": f"models/{self._model}",
+                   "content": {"parts": [{"text": text}]},
+                   # Ask for exactly the configured dim (768 by default):
+                   # the model natively returns 3072 dims, and truncating
+                   # that vector afterwards would throw away signal.
+                   "outputDimensionality": self.dim}
+        resp = self._post_with_retry(url, payload)
+        return self._normalize(resp.json()["embedding"]["values"])
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Embed up to 100 texts in ONE batchEmbedContents call.
+
+        This is what makes big ingests fast: the old one-call-per-chunk
+        loop needed ~165 HTTP calls for a 46-page PDF (60s+ and the
+        request died); one batch call covers 100 chunks.
+        """
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self._model}:batchEmbedContents"
+        )
+        payload = {"requests": [
+            {"model": f"models/{self._model}",
+             "content": {"parts": [{"text": t}]},
+             "outputDimensionality": self.dim}
+            for t in texts
+        ]}
+        resp = self._post_with_retry(url, payload)
+        embeddings = resp.json().get("embeddings", [])
+        if len(embeddings) != len(texts):
+            raise ValueError(
+                f"Batch embed returned {len(embeddings)} vectors for "
+                f"{len(texts)} texts.")
+        logger.info("Gemini batch embed: %d texts in 1 call", len(texts))
+        return [self._normalize(e.get("values", [])) for e in embeddings]
+
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [self._embed_one(t) for t in texts]
+        vectors: list[list[float]] = []
+        # Gemini caps a batch at 100 requests; big ingests go through in
+        # 100-text batches. A batch that fails falls back to one-by-one
+        # for that batch only, so one bad chunk never loses the rest.
+        for start in range(0, len(texts), 100):
+            batch = texts[start:start + 100]
+            try:
+                vectors.extend(self._embed_batch(batch))
+            except Exception as exc:
+                logger.warning("Batch embed failed (%s); embedding %d texts "
+                               "one by one.", exc, len(batch))
+                vectors.extend(self._embed_one(t) for t in batch)
+        return vectors
 
     def embed_query(self, text: str) -> list[float]:
         return self._embed_one(text)

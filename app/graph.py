@@ -617,7 +617,12 @@ def generate(state: dict, on_token=None) -> dict:
                 "the answer, say so — do not invent anything. The conversation "
                 "history is only to help you understand references in the "
                 "question (like 'that' or 'the second one'); every factual "
-                "claim must come from the retrieved context.")
+                "claim must come from the retrieved context. "
+                "When the user asks for a summary or explanation of several "
+                "topics, give EACH topic a proper detailed paragraph — what it "
+                "is, why it matters, how it works — instead of a one-line "
+                "bullet. Use headings and lists to structure the answer, but "
+                "explain every point; never just list topic titles.")
             # Fit history + docs to the token budget before assembling.
             fixed_tokens = estimate_tokens(system + instruction + question)
             docs, history_used, budget = _fit_prompt_context(

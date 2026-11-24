@@ -99,6 +99,19 @@ class BM25Store:
             self._build()
             self._save()
 
+    def set_owner_for_ownerless(self, owner_id: str) -> int:
+        """Stamp owner_id on every chunk that has none (first-
+        registration legacy claim). Persists the file. Returns the
+        number of chunks stamped."""
+        count = 0
+        for chunk in self.chunks:
+            if chunk.get("owner_id") is None:
+                chunk["owner_id"] = owner_id
+                count += 1
+        if count:
+            self._save()
+        return count
+
     def search(self, query: str, top_k: int) -> list[tuple[int, float]]:
         """Return [(chunk_index, bm25_score)] sorted by score desc."""
         if not self.chunks:
@@ -191,6 +204,16 @@ class VectorStore:
                 field_name="access_roles", field_schema=PayloadSchemaType.KEYWORD)
         except Exception as exc:  # noqa: BLE001 - index may already exist
             logger.debug("VectorStore: access_roles payload index: %s", exc)
+        # Per-user isolation (auth): owner_id is a MUST filter on every
+        # query and on filtered deletes — Qdrant Cloud needs a payload
+        # index for it, same as document_id / access_roles above.
+        try:
+            from qdrant_client.models import PayloadSchemaType
+            client.create_payload_index(
+                collection_name=settings.QDRANT_COLLECTION,
+                field_name="owner_id", field_schema=PayloadSchemaType.KEYWORD)
+        except Exception as exc:  # noqa: BLE001 - index may already exist
+            logger.debug("VectorStore: owner_id payload index: %s", exc)
 
     def status(self) -> dict:
         return {"store": self.mode, "qdrant_url": settings.QDRANT_URL,
@@ -198,8 +221,11 @@ class VectorStore:
                 "chunks": len(self._memory) if self.mode == "memory" else len(self.bm25.chunks)}
 
     # -- writes -----------------------------------------------------------
-    def upsert_chunks(self, chunks: list[dict], vectors: list[list[float]]) -> list[str]:
-        """chunks: [{text, source, title, chunk_index, document_id, metadata}]."""
+    def upsert_chunks(self, chunks: list[dict], vectors: list[list[float]],
+                      owner_id: str | None = None) -> list[str]:
+        """chunks: [{text, source, title, chunk_index, document_id, metadata}].
+        owner_id is stamped on every point's payload so retrieval can
+        filter to one user's documents only (see search)."""
         # Defense in depth (see ingestion.ingest_text): never send vectors
         # whose dimension differs from the collection's — Qdrant rejects
         # them with a bare 400 and the caller may already have written
@@ -219,6 +245,10 @@ class VectorStore:
             # in metadata for the BM25 copy (same dicts). Untagged chunks
             # default to public (["employee"]) — see guardrails.py.
             "access_roles": (c.get("metadata", {}) or {}).get("access_roles") or ["employee"],
+            # Per-user isolation: every point carries its owner's id.
+            # Retrieval filters owner_id == the requester (see search),
+            # so a point without one is invisible to everyone.
+            "owner_id": owner_id,
         } for i, c in enumerate(chunks)]
         if self.mode == "qdrant":
             from qdrant_client.models import PointStruct
@@ -234,27 +264,75 @@ class VectorStore:
         self.bm25.add_chunks(payloads)
         return ids
 
-    def delete_by_document(self, document_id: str) -> None:
+    def delete_by_document(self, document_id: str, owner_id: str) -> None:
+        """Delete every chunk of one document — but only the owner's
+        own chunks. The Qdrant delete is filtered on owner_id as well
+        as document_id, so a wrong-owner call deletes nothing."""
         if self.mode == "qdrant":
             from qdrant_client.models import FieldCondition, Filter, MatchValue
 
             self._client.delete(
                 collection_name=settings.QDRANT_COLLECTION,
-                points_selector=Filter(must=[FieldCondition(
-                    key="document_id", match=MatchValue(value=document_id))]),
+                points_selector=Filter(must=[
+                    FieldCondition(key="document_id",
+                                   match=MatchValue(value=document_id)),
+                    FieldCondition(key="owner_id",
+                                   match=MatchValue(value=owner_id)),
+                ]),
             )
         else:
             self._memory = [m for m in self._memory
-                            if m["payload"].get("document_id") != document_id]
+                            if not (m["payload"].get("document_id") == document_id
+                                    and m["payload"].get("owner_id") == owner_id)]
         self.bm25.remove_by_document(document_id)
+
+    def claim_ownerless_points(self, owner_id: str) -> int:
+        """Set owner_id on every Qdrant point (and BM25 chunk) that has
+        none. Used by the first-registration legacy claim (see
+        app/auth_service.claim_legacy_data). Returns the number of
+        Qdrant points claimed."""
+        claimed = 0
+        if self.mode == "qdrant" and self._client is not None:
+            offset = None
+            while True:
+                points, next_offset = self._client.scroll(
+                    collection_name=settings.QDRANT_COLLECTION,
+                    limit=100, offset=offset,
+                    with_payload=True, with_vectors=False)
+                ownerless = [p.id for p in points
+                             if (p.payload or {}).get("owner_id") is None]
+                if ownerless:
+                    self._client.set_payload(
+                        collection_name=settings.QDRANT_COLLECTION,
+                        payload={"owner_id": owner_id}, points=ownerless)
+                    claimed += len(ownerless)
+                if next_offset is None:
+                    break
+                offset = next_offset
+        else:
+            for point in self._memory:
+                if point["payload"].get("owner_id") is None:
+                    point["payload"]["owner_id"] = owner_id
+                    claimed += 1
+        # The BM25 copy holds the same payload dicts in memory mode; in
+        # Qdrant mode it is a separate local copy — stamp both.
+        self.bm25.set_owner_for_ownerless(owner_id)
+        return claimed
 
     # -- hybrid search ----------------------------------------------------
     def search(self, query: str, query_embedding: list[float], top_k: int,
-               role: str | None = None) -> list[dict]:
+               role: str | None = None, *, owner_id: str) -> list[dict]:
         """Hybrid dense + BM25 search, RRF fusion, cosine rerank.
 
         Returns [{text, source, title, chunk_index, document_id, score,
         dense_score, bm25_score}] sorted by final cosine score desc.
+
+        Per-user isolation: owner_id is REQUIRED and filters every
+        path — the Qdrant query carries it as a MUST condition, the
+        in-memory path skips other owners' points, and the pool-level
+        backstop drops anything whose owner_id is not the requester
+        (that is what enforces access on the BM25 path, which has no
+        server-side filter). A chunk with no owner_id matches nobody.
 
         Guardrails: ``role`` filters chunks to what the requester may
         see, BEFORE ranking or generation. Two layers: a Qdrant-side
@@ -266,20 +344,31 @@ class VectorStore:
         from app.guardrails import chunk_access_roles, role_can_access
         from app.config import settings as _settings
 
+        if owner_id is None:
+            # Fail loudly instead of silently searching every user's
+            # documents: every request path passes the requester's id.
+            raise ValueError("owner_id is required for search")
         role = (role or "").strip().lower() or _settings.GUARDRAIL_DEFAULT_ROLE
         # 1. Dense candidates (oversample for the fusion pool).
         dense_ranked: list[dict] = []
         if self.mode == "qdrant":
             from qdrant_client.models import (FieldCondition, Filter,
                                               IsEmptyCondition, MatchAny,
-                                              PayloadField)
+                                              MatchValue, PayloadField)
 
-            qfilter = Filter(should=[
-                FieldCondition(key="access_roles",
-                               match=MatchAny(any=[role, "employee"])),
-                # Legacy chunks ingested before roles existed carry no
-                # access_roles field; they are public, not invisible.
-                IsEmptyCondition(is_empty=PayloadField(key="access_roles")),
+            # Owner is a MUST: no point from another user (or with no
+            # owner) may leave the server. Roles are a nested SHOULD
+            # inside the same MUST, as before.
+            qfilter = Filter(must=[
+                FieldCondition(key="owner_id",
+                               match=MatchValue(value=owner_id)),
+                Filter(should=[
+                    FieldCondition(key="access_roles",
+                                   match=MatchAny(any=[role, "employee"])),
+                    # Legacy chunks ingested before roles existed carry no
+                    # access_roles field; they are public, not invisible.
+                    IsEmptyCondition(is_empty=PayloadField(key="access_roles")),
+                ]),
             ])
             # NB: qdrant-client >= 1.11 removed client.search(); the
             # current call is query_points (same ScoredPoint shape).
@@ -292,7 +381,9 @@ class VectorStore:
                                      "dense_score": float(h.score)})
         else:
             scored = sorted(
-                ((cosine_similarity(query_embedding, m["vector"]), m) for m in self._memory),
+                ((cosine_similarity(query_embedding, m["vector"]), m)
+                 for m in self._memory
+                 if m["payload"].get("owner_id") == owner_id),
                 key=lambda x: -x[0])
             for score, m in scored[: max(top_k * 2, 10)]:
                 dense_ranked.append({**m["payload"], "score": float(score),
@@ -319,11 +410,13 @@ class VectorStore:
             pool.setdefault(_key(d), {**d, "dense_score": 0.0,
                                       "score": 0.0}).setdefault("bm25_score", d["bm25_score"])
             pool[_key(d)]["bm25_score"] = d["bm25_score"]
-        # Guardrail backstop: drop any chunk the role may not see BEFORE
-        # fusion/ranking — this is what enforces access on the BM25 path
-        # (no server-side filter there) and on legacy untagged chunks.
+        # Guardrail backstop: drop any chunk the role may not see, and
+        # any chunk owned by someone else, BEFORE fusion/ranking — this
+        # is what enforces access on the BM25 path (no server-side
+        # filter there) and on legacy untagged chunks.
         pool = {k: d for k, d in pool.items()
-                if role_can_access(chunk_access_roles(d), role)}
+                if role_can_access(chunk_access_roles(d), role)
+                and d.get("owner_id") == owner_id}
         dense_ranked = [d for d in dense_ranked
                         if _key(d) in pool]
         bm25_ranked = [d for d in bm25_ranked

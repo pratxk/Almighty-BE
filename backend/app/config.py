@@ -193,6 +193,12 @@ if _HAS_PYDANTIC_SETTINGS:
         CACHE_MAX_ENTRIES: int = 200
         CACHE_SEMANTIC_SCAN_MAX: int = 500
 
+        # JWT secret for access tokens. Must be set in production
+        # (Render: dashboard > Environment); the server refuses to
+        # start without it. Local dev: a generated value lives in
+        # backend/.env (gitignored, never committed).
+        JWT_SECRET: str = ""
+
         # Web search fallback (Tavily — see app/websearch.py). The
         # classic Adaptive RAG fallback: when local grading rejects
         # everything (or the grounding check fails), search the web and
@@ -262,6 +268,8 @@ else:
             self.TAVILY_ENABLED = os.environ.get("TAVILY_ENABLED", "true").lower() in ("1", "true", "yes")
             self.TAVILY_SEARCH_DEPTH = env("TAVILY_SEARCH_DEPTH", "basic")
             self.TAVILY_MAX_RESULTS = _env_int("TAVILY_MAX_RESULTS", 5)
+            # JWT secret for access tokens — see the pydantic branch above.
+            self.JWT_SECRET = env("JWT_SECRET", "")
 
 
 settings = Settings()

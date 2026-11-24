@@ -114,9 +114,12 @@ async def _run_job(job_id: str) -> dict:
         # before the first progress callback fires.
         await update_job(job_id, total_chunks=len(chunk_text(text)))
         access_roles = (job.get("meta") or {}).get("access_roles")
+        # The job row carries the owner's id (stamped at upload time);
+        # the finished document and its Qdrant points get the same one.
         result = await ingest_text(title=title, text=text, source=source,
                                    access_roles=access_roles,
-                                   on_progress=report_progress)
+                                   on_progress=report_progress,
+                                   owner_id=job.get("owner_id"))
         stats = {"document_id": result["document_id"],
                  "chars": result["chars"],
                  "chunks": result["chunks"],

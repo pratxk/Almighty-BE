@@ -138,15 +138,23 @@ def history_key(history) -> str:
     return hashlib.sha256("\n".join(turns).encode("utf-8")).hexdigest()
 
 
-def _exact_key(question: str, history, role: str = "employee") -> str:
+def _exact_key(question: str, history, role: str = "employee",
+               owner_id: str | None = None) -> str:
+    # owner_id is part of the key: an exact-match answer cached for
+    # one user must never be served to another, even for the identical
+    # question. Entries cached before auth carry no owner and simply
+    # never match a namespaced key (they expire by TTL).
     raw = (f"exact|{normalize_question(question)}|{history_key(history)}|"
-           f"role={(role or '').strip().lower() or 'employee'}")
+           f"role={(role or '').strip().lower() or 'employee'}|"
+           f"owner={owner_id or ''}")
     return EXACT_PREFIX + hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _sem_key(question: str, history, role: str = "employee") -> str:
+def _sem_key(question: str, history, role: str = "employee",
+             owner_id: str | None = None) -> str:
     raw = (f"sem|{normalize_question(question)}|{history_key(history)}|"
-           f"role={(role or '').strip().lower() or 'employee'}")
+           f"role={(role or '').strip().lower() or 'employee'}|"
+           f"owner={owner_id or ''}")
     return SEM_PREFIX + hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -353,7 +361,7 @@ class ResponseCache:
     # -- public API -------------------------------------------------------
 
     def lookup(self, question: str, history, documents: list[dict],
-               role: str = "employee"
+               role: str = "employee", owner_id: str | None = None
                ) -> tuple[dict | None, str | None, list[float] | None,
                           float | None]:
         """(entry, hit_type, query_embedding, similarity) — entry None on a miss.
@@ -363,19 +371,21 @@ class ResponseCache:
         is the cosine score for semantic hits, else None. ``role``
         scopes the lookup: an entry stored for another role never hits
         (see the module docstring — without this, cached answers would
-        leak across roles).
+        leak across roles). ``owner_id`` scopes it the same way across
+        users: the exact key carries the owner, and the semantic scan
+        skips entries whose owner is not the requester.
         """
         role = (role or "").strip().lower() or "employee"
         current_ids = {d["id"] for d in documents}
         hkey = history_key(history)
 
-        exact = self._get(_exact_key(question, history, role))
+        exact = self._get(_exact_key(question, history, role, owner_id))
         if exact is not None:
             if self._valid(exact, current_ids):
                 logger.info("Response cache: exact hit (%s)",
                             normalize_question(question)[:60])
                 return exact, "exact", None, None
-            self._delete(_exact_key(question, history, role))
+            self._delete(_exact_key(question, history, role, owner_id))
             logger.info("Response cache: exact entry stale (cited doc gone); "
                         "treating as a miss.")
 
@@ -393,6 +403,11 @@ class ResponseCache:
         best_key: str | None = None
         for key, entry in self._scan(SEM_PREFIX, self.sem_scan_max):
             if entry.get("history_key", "") != hkey:
+                continue
+            # Owner-scoped: entries stored for another user never match.
+            # Legacy entries (stored before auth) carry no owner and
+            # are skipped for every authenticated user.
+            if entry.get("owner_id") != owner_id:
                 continue
             # Role-scoped: entries stored for another role never match.
             # Legacy entries (stored before roles) carry no role and are
@@ -423,8 +438,10 @@ class ResponseCache:
     def store(self, result: dict, question: str, history,
               documents: list[dict],
               query_embedding: list[float] | None = None,
-              role: str = "employee") -> bool:
-        """Cache a fresh result under both its exact and semantic keys."""
+              role: str = "employee", owner_id: str | None = None) -> bool:
+        """Cache a fresh result under both its exact and semantic keys.
+        Both keys (and the stored entry) carry owner_id, so a cached
+        answer is only ever served back to the user who asked for it."""
         if not is_cacheable(result):
             return False
         role = (role or "").strip().lower() or "employee"
@@ -440,12 +457,13 @@ class ResponseCache:
             "question": normalize_question(question),
             "history_key": history_key(history),
             "role": role,
+            "owner_id": owner_id,
             "doc_ids": _cited_doc_ids(result.get("sources") or [], documents),
             "source_keys": _source_keys(result.get("sources") or []),
             "corpus_version": corpus_version(current_ids),
             "created_at": time.time(),
         }
-        self._set(_exact_key(question, history, role), entry)
+        self._set(_exact_key(question, history, role, owner_id), entry)
         if query_embedding is None:
             try:
                 from app.embeddings import get_embedding_function
@@ -457,7 +475,7 @@ class ResponseCache:
                 return True
         sem_entry = dict(entry)
         sem_entry["embedding"] = [float(v) for v in query_embedding]
-        self._set(_sem_key(question, history, role), sem_entry)
+        self._set(_sem_key(question, history, role, owner_id), sem_entry)
         return True
 
     def invalidate_document(self, doc_id: str, title: str = "",

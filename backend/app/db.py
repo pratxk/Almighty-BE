@@ -53,6 +53,11 @@ class Document(Base):
     # currently {"access_roles": [...]}. Added after the table existed;
     # init_db() ALTERs it in for pre-existing databases.
     meta: Mapped[str] = mapped_column(Text, default="{}")
+    # Who owns this document (app/auth_service.py). NULL on rows
+    # ingested before auth landed — the first user to register claims
+    # them (claim_legacy_data); every later row is stamped at ingest.
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True,
+                                                 index=True, default=None)
 
     def to_dict(self) -> dict:
         try:
@@ -66,7 +71,7 @@ class Document(Base):
             "chars": self.chars, "approx_tokens": self.approx_tokens,
             "chunks": self.chunk_count, "chunk_count": self.chunk_count,
             "chunk_size": self.chunk_size, "chunk_overlap": self.chunk_overlap,
-            "access_roles": roles, "meta": meta,
+            "access_roles": roles, "meta": meta, "owner_id": self.owner_id,
         }
 
 
@@ -81,6 +86,9 @@ class Conversation(Base):
     sources: Mapped[str] = mapped_column(Text, default="[]")  # JSON list
     trace: Mapped[str] = mapped_column(Text, default="{}")    # JSON run-trace summary
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # Owner of this conversation — see Document.owner_id.
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True,
+                                                 index=True, default=None)
 
     def to_dict(self) -> dict:
         try:
@@ -96,6 +104,7 @@ class Conversation(Base):
             "question": self.question, "answer": self.answer,
             "confidence": self.confidence, "sources": sources, "trace": trace,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "owner_id": self.owner_id,
         }
 
 
@@ -138,6 +147,10 @@ class IngestJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow,
                                                  onupdate=_utcnow)
+    # Owner of this job — see Document.owner_id. The worker reads it
+    # off the row so the finished document gets the same owner.
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True,
+                                                 index=True, default=None)
 
     def to_dict(self) -> dict:
         try:
@@ -158,7 +171,60 @@ class IngestJob(Base):
             "file_name": self.file_name,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "owner_id": self.owner_id,
         }
+
+
+# --- auth (see app/auth_service.py) --------------------------------------
+# Mirrors Elric's auth tables: one row per account, one row per refresh
+# token (only its SHA-256 hash is stored), one row per failed login
+# (for the 5-fails / 15-minute lockout).
+
+
+class User(Base):
+    """One login account (email + bcrypt password hash)."""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id, "email": self.email,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class RefreshToken(Base):
+    """One refresh token. The raw token lives only in the user's
+    HttpOnly cookie; here only its SHA-256 hash is stored, so a
+    database leak cannot be used to mint sessions. Tokens rotate
+    inside one family_id; presenting an already-rotated token revokes
+    the whole family (reuse detection)."""
+
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64))
+    family_id: Mapped[str] = mapped_column(String(36), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
+                                                        nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class LoginAttempt(Base):
+    """One failed login, for the lockout (5 fails / 15 minutes)."""
+
+    __tablename__ = "login_attempts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    email: Mapped[str] = mapped_column(String(320), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 _engine = None
@@ -229,6 +295,23 @@ async def init_db() -> None:
                 text("ALTER TABLE documents ADD COLUMN meta TEXT DEFAULT '{}'"))
     except Exception:  # noqa: BLE001 - column already present
         pass
+    # owner_id columns, added when auth landed (2026-11-24): create_all
+    # will not ALTER pre-existing tables, so add them explicitly, each
+    # in its OWN transaction for the same Postgres reason as above.
+    # The matching indexes let the per-user list queries stay fast.
+    for statement in (
+        "ALTER TABLE documents ADD COLUMN owner_id VARCHAR(36)",
+        "ALTER TABLE conversations ADD COLUMN owner_id VARCHAR(36)",
+        "ALTER TABLE ingest_jobs ADD COLUMN owner_id VARCHAR(36)",
+        "CREATE INDEX IF NOT EXISTS ix_documents_owner_id ON documents (owner_id)",
+        "CREATE INDEX IF NOT EXISTS ix_conversations_owner_id ON conversations (owner_id)",
+        "CREATE INDEX IF NOT EXISTS ix_ingest_jobs_owner_id ON ingest_jobs (owner_id)",
+    ):
+        try:
+            async with _engine.begin() as conn:
+                await conn.execute(text(statement))
+        except Exception:  # noqa: BLE001 - column/index already present
+            pass
     logger.info("DB initialised (%s)", settings.DATABASE_URL.split("://")[0])
 
 
@@ -236,35 +319,49 @@ async def init_db() -> None:
 
 async def create_document(title: str, source: str, text: str, chunk_count: int,
                           chunk_size: int, chunk_overlap: int,
-                          meta: dict | None = None) -> dict:
+                          meta: dict | None = None,
+                          owner_id: str | None = None) -> dict:
     chars = len(text)
     async with get_session() as session:
         doc = Document(title=title, source=source, chars=chars,
                        approx_tokens=estimate_tokens(text), chunk_count=chunk_count,
                        chunk_size=chunk_size, chunk_overlap=chunk_overlap,
-                       meta=json.dumps(meta or {}))
+                       meta=json.dumps(meta or {}), owner_id=owner_id)
         session.add(doc)
         await session.commit()
         return doc.to_dict()
 
 
-async def list_documents(limit: int = 100) -> list[dict]:
+async def list_documents(*, owner_id: str, limit: int = 100) -> list[dict]:
+    """Documents belonging to one user only. owner_id is required —
+    there is no unfiltered list anymore (see get_corpus_stats for the
+    public totals used by /health)."""
     async with get_session() as session:
         rows = (await session.execute(
-            select(Document).order_by(Document.created_at.desc()).limit(limit)
+            select(Document).where(Document.owner_id == owner_id)
+            .order_by(Document.created_at.desc()).limit(limit)
         )).scalars().all()
         return [r.to_dict() for r in rows]
 
 
-async def get_document(doc_id: str) -> dict | None:
+async def get_document(doc_id: str, *, owner_id: str) -> dict | None:
+    """One document, only when it belongs to this user. A document
+    owned by someone else looks exactly like a missing one (None) —
+    the caller turns that into a 404 and never reveals it exists."""
     async with get_session() as session:
-        row = await session.get(Document, doc_id)
+        row = (await session.execute(
+            select(Document).where(Document.id == doc_id,
+                                  Document.owner_id == owner_id)
+        )).scalars().first()
         return row.to_dict() if row else None
 
 
-async def delete_document(doc_id: str) -> bool:
+async def delete_document(doc_id: str, *, owner_id: str) -> bool:
     async with get_session() as session:
-        row = await session.get(Document, doc_id)
+        row = (await session.execute(
+            select(Document).where(Document.id == doc_id,
+                                  Document.owner_id == owner_id)
+        )).scalars().first()
         if row is None:
             return False
         await session.delete(row)
@@ -272,18 +369,25 @@ async def delete_document(doc_id: str) -> bool:
         return True
 
 
-async def get_corpus_stats() -> dict:
-    """Corpus totals for run traces: docs, chars, approx tokens, chunks."""
+async def get_corpus_stats(owner_id: str | None = None) -> dict:
+    """Corpus totals for run traces: docs, chars, approx tokens, chunks.
+    With owner_id the totals are that user's only; without it (the
+    public /health endpoint) they cover the whole corpus."""
     async with get_session() as session:
-        row = (await session.execute(select(
+        query = select(
             func.count(Document.id),
             func.coalesce(func.sum(Document.chars), 0),
             func.coalesce(func.sum(Document.approx_tokens), 0),
             func.coalesce(func.sum(Document.chunk_count), 0),
-        ))).one()
-        chunk_row = (await session.execute(select(
-            Document.chunk_size, Document.chunk_overlap,
-        ).order_by(Document.created_at.desc()).limit(1))).first()
+        )
+        if owner_id is not None:
+            query = query.where(Document.owner_id == owner_id)
+        row = (await session.execute(query)).one()
+        latest = select(Document.chunk_size, Document.chunk_overlap)
+        if owner_id is not None:
+            latest = latest.where(Document.owner_id == owner_id)
+        chunk_row = (await session.execute(
+            latest.order_by(Document.created_at.desc()).limit(1))).first()
     return {
         "documents_ingested": int(row[0]),
         "total_chars": int(row[1]),
@@ -298,30 +402,33 @@ async def get_corpus_stats() -> dict:
 
 async def create_conversation(question: str, answer: str, confidence: float,
                               sources: list[dict], run_id: str = "",
-                              trace: dict | None = None) -> dict:
+                              trace: dict | None = None,
+                              owner_id: str | None = None) -> dict:
     async with get_session() as session:
         conv = Conversation(
             run_id=run_id or str(uuid.uuid4()), question=question, answer=answer,
             confidence=float(confidence), sources=json.dumps(sources or []),
-            trace=json.dumps(trace or {}))
+            trace=json.dumps(trace or {}), owner_id=owner_id)
         session.add(conv)
         await session.commit()
         return conv.to_dict()
 
 
-async def list_conversations(limit: int = 50) -> list[dict]:
+async def list_conversations(*, owner_id: str, limit: int = 50) -> list[dict]:
     async with get_session() as session:
         rows = (await session.execute(
-            select(Conversation).order_by(Conversation.created_at.desc()).limit(limit)
+            select(Conversation).where(Conversation.owner_id == owner_id)
+            .order_by(Conversation.created_at.desc()).limit(limit)
         )).scalars().all()
         return [r.to_dict() for r in rows]
 
 
-async def get_conversation_by_run(run_id: str) -> dict | None:
+async def get_conversation_by_run(run_id: str, *, owner_id: str) -> dict | None:
     async with get_session() as session:
         row = (await session.execute(
             select(Conversation).where(
-                (Conversation.run_id == run_id) | (Conversation.id == run_id))
+                ((Conversation.run_id == run_id) | (Conversation.id == run_id))
+                & (Conversation.owner_id == owner_id))
             .order_by(Conversation.created_at.desc()).limit(1)
         )).scalars().first()
         return row.to_dict() if row else None
@@ -332,21 +439,29 @@ async def get_conversation_by_run(run_id: str) -> dict | None:
 async def create_job(kind: str, title: str, source: str,
                      file_data: bytes | None = None,
                      file_name: str = "",
-                     meta: dict | None = None) -> dict:
+                     meta: dict | None = None,
+                     *, owner_id: str) -> dict:
     """Create a queued ingest job. The file bytes ride along in the row
-    so the worker can pick the job up even after a restart."""
+    so the worker can pick the job up even after a restart. owner_id is
+    required: the worker stamps the finished document with it."""
     async with get_session() as session:
         job = IngestJob(kind=kind, title=title, source=source,
                         status="queued", file_data=file_data,
-                        file_name=file_name, meta=json.dumps(meta or {}))
+                        file_name=file_name, meta=json.dumps(meta or {}),
+                        owner_id=owner_id)
         session.add(job)
         await session.commit()
         return job.to_dict()
 
 
-async def get_job(job_id: str) -> dict | None:
+async def get_job(job_id: str, *, owner_id: str) -> dict | None:
+    """One job, only when it belongs to this user (same 404 rule as
+    get_document: another user's job looks missing)."""
     async with get_session() as session:
-        row = await session.get(IngestJob, job_id)
+        row = (await session.execute(
+            select(IngestJob).where(IngestJob.id == job_id,
+                                    IngestJob.owner_id == owner_id)
+        )).scalars().first()
         return row.to_dict() if row else None
 
 
@@ -360,10 +475,11 @@ async def get_job_with_bytes(job_id: str) -> tuple[dict | None, bytes | None]:
         return row.to_dict(), row.file_data
 
 
-async def list_jobs(limit: int = 50) -> list[dict]:
+async def list_jobs(*, owner_id: str, limit: int = 50) -> list[dict]:
     async with get_session() as session:
         rows = (await session.execute(
-            select(IngestJob).order_by(IngestJob.created_at.desc()).limit(limit)
+            select(IngestJob).where(IngestJob.owner_id == owner_id)
+            .order_by(IngestJob.created_at.desc()).limit(limit)
         )).scalars().all()
         return [r.to_dict() for r in rows]
 

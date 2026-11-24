@@ -31,6 +31,8 @@ sqlalchemy[asyncio]>=2.0  # [asyncio] pulls in greenlet, required by sqlalchemy.
 aiosqlite>=0.20
 asyncpg>=0.29  # Postgres driver for DATABASE_URL=postgresql+asyncpg://... (Supabase)
 rq>=1.15  # Redis Queue: background ingest jobs (see app/jobs.py)
+bcrypt>=4.1  # password hashing for login (see app/auth_service.py); no passlib
+PyJWT>=2.8  # HS256 access tokens (see app/jwt_tokens.py)
 httpx>=0.27
 # Web search fallback (Tavily — see app/websearch.py). The SDK is the
 # primary path; a raw httpx POST is the fallback when it is absent.

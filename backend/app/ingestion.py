@@ -99,12 +99,19 @@ def _stats(text: str, chunks: list[str], chunk_size: int, chunk_overlap: int) ->
 async def ingest_text(title: str, text: str, source: str,
                       chunk_size: int = CHUNK_SIZE,
                       chunk_overlap: int = CHUNK_OVERLAP,
-                      access_roles=None, on_progress=None) -> dict:
+                      access_roles=None, on_progress=None,
+                      owner_id: str | None = None) -> dict:
     """Chunk + embed + store text. Returns {document_id, ..., stats}.
 
     ``access_roles`` tags the document for guardrails (e.g. ["exec"]):
     only those roles may retrieve its chunks. None means public
     (["employee"]) — see guardrails.normalize_roles.
+
+    ``owner_id`` is the user the document belongs to: it is stamped
+    on the document row and on every Qdrant point, so only that user
+    can list, retrieve, or delete it. None leaves the document
+    ownerless (visible to nobody — only the first-registration claim
+    can adopt it).
 
     ``on_progress`` is an optional async callback the background worker
     passes in: ``await on_progress(stage, done_chunks, total_chunks)``
@@ -139,12 +146,13 @@ async def ingest_text(title: str, text: str, source: str,
     doc = await create_document(title=title, source=source, text=text,
                                 chunk_count=len(chunks),
                                 chunk_size=chunk_size, chunk_overlap=chunk_overlap,
-                                meta={"access_roles": roles})
+                                meta={"access_roles": roles},
+                                owner_id=owner_id)
     store.upsert_chunks(
         [{"text": c, "source": source, "title": title, "chunk_index": i,
           "document_id": doc["id"], "metadata": {"access_roles": roles}}
          for i, c in enumerate(chunks)],
-        vectors)
+        vectors, owner_id=owner_id)
     if on_progress is not None:
         await on_progress("stored", len(chunks), len(chunks))
     logger.info("Ingested %s: %d chunks, %d chars (~%d tokens) from %s "

@@ -442,7 +442,8 @@ def retrieve(state: dict) -> dict:
     try:
         qvec = embed_query(query)
         docs = get_vector_store().search(query, qvec, top_k=top_k,
-                                         role=state.get("role"))
+                                         role=state.get("role"),
+                                         owner_id=state.get("owner_id"))
     except Exception as exc:  # noqa: BLE001 - retrieval must not break chat
         logger.warning("retrieve: local search unavailable (%s); continuing "
                        "with no local docs.", exc)
@@ -693,6 +694,7 @@ try:
         rewritten_question: str
         history: list
         role: str
+        owner_id: str
         documents: list
         all_graded: list
         route: str
@@ -819,7 +821,8 @@ def _run_sequential(state: dict) -> dict:
 
 def run_adaptive_rag(question: str, corpus_stats: dict | None = None,
                      history=None, role: str = "employee",
-                     web_search_flag: bool = False) -> dict:
+                     web_search_flag: bool = False,
+                     owner_id: str | None = None) -> dict:
     """Run the adaptive RAG workflow. Returns the full result + trace.
 
     ``history`` is an optional list of prior turns ({role, content}) sent
@@ -832,6 +835,11 @@ def run_adaptive_rag(question: str, corpus_stats: dict | None = None,
     retrieval itself is role-filtered, and the output check runs on the
     finished answer (see guardrails.py).
 
+    ``owner_id`` is the requesting user's id. Retrieval is filtered to
+    that user's documents only (see vectorstore.search) — a run without
+    an owner retrieves nothing local. Web-search results are public
+    web pages, so they are merged as before.
+
     ``web_search_flag`` forces the Tavily web-search fallback for this
     question even when local documents answer (the web chunks are
     merged with the local ones and graded together).
@@ -843,7 +851,7 @@ def run_adaptive_rag(question: str, corpus_stats: dict | None = None,
     state: dict[str, Any] = {
         "question": question, "rewritten_question": "",
         "history": _normalize_history(history),
-        "role": role,
+        "role": role, "owner_id": owner_id,
         "documents": [],
         "all_graded": [], "route": "retrieve", "grade": {}, "answer": "",
         "confidence": 0.0, "retries": 0, "trace": trace,
@@ -903,7 +911,7 @@ def run_adaptive_rag(question: str, corpus_stats: dict | None = None,
         "sources": sources, "trace": trace, "route": state.get("route"),
         "retries": int(state.get("retries") or 0),
     }
-    save_run_trace(trace)
+    save_run_trace(trace, owner_id=owner_id)
     return result
 
 
@@ -965,7 +973,8 @@ def _step_detail(node: str, s: dict) -> str:
 
 def run_adaptive_rag_stream(question: str, corpus_stats: dict | None,
                             emit, history=None, role: str = "employee",
-                            web_search_flag: bool = False) -> None:
+                            web_search_flag: bool = False,
+                            owner_id: str | None = None) -> None:
     """Streaming twin of :func:`run_adaptive_rag`.
 
     Runs the same nodes in the same order (sequential path only — the
@@ -999,7 +1008,7 @@ def run_adaptive_rag_stream(question: str, corpus_stats: dict | None,
     state: dict[str, Any] = {
         "question": question, "rewritten_question": "",
         "history": _normalize_history(history),
-        "role": role,
+        "role": role, "owner_id": owner_id,
         "documents": [],
         "all_graded": [], "route": "retrieve", "grade": {}, "answer": "",
         "confidence": 0.0, "retries": 0, "trace": trace,
@@ -1062,7 +1071,7 @@ def run_adaptive_rag_stream(question: str, corpus_stats: dict | None,
             "sources": sources, "trace": trace, "route": state.get("route"),
             "retries": int(state.get("retries") or 0),
         }
-        save_run_trace(trace)
+        save_run_trace(trace, owner_id=owner_id)
         return result
 
     def refuse_and_finish() -> None:

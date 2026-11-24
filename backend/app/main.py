@@ -3,6 +3,9 @@
 Run ``uvicorn app.main:app --reload`` from ``backend/``.
 With no keys and no Qdrant, the app still runs in degraded/demo mode:
 in-memory retrieval + extractive answers, clearly labelled as such.
+
+Auth: every /api/* data endpoint requires a Bearer access token
+(see app/auth.py); / and /health stay public.
 """
 from __future__ import annotations
 
@@ -14,11 +17,12 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.auth import require_user, router as auth_router
 from app.cache import build_cached_trace, get_response_cache
 from app.config import settings
 from app.db import (create_conversation, create_job, delete_document,
@@ -27,6 +31,7 @@ from app.db import (create_conversation, create_job, delete_document,
                     list_jobs, update_job)
 from app.graph import run_adaptive_rag, run_adaptive_rag_stream
 from app.guardrails import guardrail_status, normalize_roles
+from app.jwt_tokens import require_jwt_secret
 from app.run_store import get_run_trace, save_run_trace
 from app.tracing import setup_tracing
 from app.vectorstore import get_vector_store
@@ -39,6 +44,7 @@ app = FastAPI(title="Adaptive RAG", version="1.0.0",
                           "(Gemini default, Ollama fallback, extractive demo mode).")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
+app.include_router(auth_router)
 
 
 class ChatRequest(BaseModel):
@@ -93,6 +99,10 @@ async def _init_db_with_retry() -> None:
 @app.on_event("startup")
 async def startup() -> None:
     await _init_db_with_retry()
+    # Auth: refuse to boot without a JWT secret — issuing tokens nobody
+    # can verify (or verifying with an empty secret) must fail loudly.
+    # Set JWT_SECRET in the environment (Render) or backend/.env (local).
+    require_jwt_secret()
     setup_tracing()
     store = get_vector_store()
     # A fresh/empty metadata DB must not see stale BM25 chunks left over
@@ -128,7 +138,8 @@ def health() -> dict:
 
 
 def _serve_cached(entry: dict, hit_type: str, question: str, corpus: dict,
-                  serve_ms: float, similarity: float | None = None) -> dict:
+                  serve_ms: float, similarity: float | None = None,
+                  owner_id: str | None = None) -> dict:
     """Build the response payload for a cache hit (fresh run id + trace).
 
     The served trace has a single ``cache_hit`` step and zero LLM calls —
@@ -138,7 +149,7 @@ def _serve_cached(entry: dict, hit_type: str, question: str, corpus: dict,
     run_id = str(uuid.uuid4())
     trace = build_cached_trace(question, run_id, corpus, entry, hit_type,
                                serve_ms, similarity)
-    save_run_trace(trace)
+    save_run_trace(trace, owner_id=owner_id)
     return {
         "answer": entry["answer"], "confidence": entry["confidence"],
         "sources": entry["sources"], "route": entry["route"],
@@ -148,36 +159,42 @@ def _serve_cached(entry: dict, hit_type: str, question: str, corpus: dict,
 
 
 @app.post("/api/chat")
-async def chat(req: ChatRequest) -> dict:
-    corpus = await get_corpus_stats()
+async def chat(req: ChatRequest, user: dict = Depends(require_user)) -> dict:
+    owner_id = user["id"]
+    corpus = await get_corpus_stats(owner_id=owner_id)
     cache = get_response_cache()
-    documents = await list_documents()
+    documents = await list_documents(owner_id=owner_id)
     # Cache lookup first: an exact or semantic hit answers without
     # retrieval or any LLM call. Lookup is sync (Redis + embeddings),
     # so it runs off the event loop like the graph does. The lookup is
     # role-scoped (guardrails): an exec's cached answer must never
-    # serve an employee, and vice versa. A forced web search skips the
+    # serve an employee, and vice versa. It is also owner-scoped: a
+    # cached answer is only ever served back to the user who asked for
+    # it, even for the identical question. A forced web search skips the
     # lookup so the web call actually happens.
     hit, hit_type, qemb, similarity = None, None, None, None
     if not req.web_search:
         lookup_started = time.perf_counter()
         hit, hit_type, qemb, similarity = await asyncio.to_thread(
-            cache.lookup, req.question, req.history, documents, req.role)
+            cache.lookup, req.question, req.history, documents, req.role,
+            owner_id=owner_id)
         serve_ms = round((time.perf_counter() - lookup_started) * 1000, 1)
     if hit is not None and hit_type is not None:
         result = _serve_cached(hit, hit_type, req.question, corpus,
-                               serve_ms, similarity)
+                               serve_ms, similarity, owner_id=owner_id)
         await create_conversation(
             question=req.question, answer=result["answer"],
             confidence=result["confidence"], sources=result["sources"],
-            run_id=result["run_id"], trace=result["trace"])
+            run_id=result["run_id"], trace=result["trace"],
+            owner_id=owner_id)
         return result
     # The graph is synchronous (httpx + LangGraph); run it off the event loop.
     # A failure anywhere in the run (e.g. upstream AI quota) is a 503 with
     # a plain message, never a bare 500 — the run is logged for diagnosis.
     try:
         result = await asyncio.to_thread(run_adaptive_rag, req.question, corpus,
-                                         req.history, req.role, req.web_search)
+                                         req.history, req.role, req.web_search,
+                                         owner_id=owner_id)
     except Exception as exc:  # noqa: BLE001 - surfaced as a 503, not a 500
         logger.exception("Chat run failed: %s", exc)
         raise HTTPException(
@@ -187,13 +204,14 @@ async def chat(req: ChatRequest) -> dict:
     # Best-effort store: a failed cache write must never fail the answer.
     try:
         await asyncio.to_thread(cache.store, result, req.question,
-                                req.history, documents, qemb, req.role)
+                                req.history, documents, qemb, req.role,
+                                owner_id=owner_id)
     except Exception as exc:  # noqa: BLE001 - caching must not break chat
         logger.warning("Response cache: store failed (%s)", exc)
     await create_conversation(
         question=req.question, answer=result["answer"],
         confidence=result["confidence"], sources=result["sources"],
-        run_id=result["run_id"], trace=result["trace"])
+        run_id=result["run_id"], trace=result["trace"], owner_id=owner_id)
     return {
         "answer": result["answer"], "confidence": result["confidence"],
         "sources": result["sources"], "route": result["route"],
@@ -205,7 +223,8 @@ async def chat(req: ChatRequest) -> dict:
 
 
 @app.post("/api/chat/stream")
-async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
+async def chat_stream(req: ChatRequest, request: Request,
+                      user: dict = Depends(require_user)) -> StreamingResponse:
     """SSE twin of POST /api/chat — same result, streamed as it happens.
 
     Events (``data: {...}\\n\\n``), see ``run_adaptive_rag_stream``:
@@ -215,20 +234,22 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     long thinking chains keep the connection (and any proxy) alive instead
     of timing out. The conversation is persisted once the stream finishes.
     """
-    corpus = await get_corpus_stats()
+    owner_id = user["id"]
+    corpus = await get_corpus_stats(owner_id=owner_id)
     cache = get_response_cache()
-    documents = await list_documents()
+    documents = await list_documents(owner_id=owner_id)
     hit, hit_type, qemb, similarity = None, None, None, None
     if not req.web_search:
         lookup_started = time.perf_counter()
         hit, hit_type, qemb, similarity = await asyncio.to_thread(
-            cache.lookup, req.question, req.history, documents, req.role)
+            cache.lookup, req.question, req.history, documents, req.role,
+            owner_id=owner_id)
         serve_ms = round((time.perf_counter() - lookup_started) * 1000, 1)
     if hit is not None and hit_type is not None:
         # Cache hit: same SSE shape as a live run (cache_hit step, token
         # chunks, done) so the frontend path is identical — just instant.
         cached = _serve_cached(hit, hit_type, req.question, corpus,
-                               serve_ms, similarity)
+                               serve_ms, similarity, owner_id=owner_id)
 
         async def cached_events():
             try:
@@ -257,7 +278,7 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                         question=req.question, answer=cached["answer"],
                         confidence=cached["confidence"],
                         sources=cached["sources"], run_id=cached["run_id"],
-                        trace=cached["trace"])
+                        trace=cached["trace"], owner_id=owner_id)
                 except Exception as exc:  # noqa: BLE001 - persistence must not break the stream
                     logger.warning("Could not persist cached conversation: %s", exc)
 
@@ -271,7 +292,8 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
     def produce() -> None:
         try:
             run_adaptive_rag_stream(req.question, corpus, events.put,
-                                    req.history, req.role, req.web_search)
+                                    req.history, req.role, req.web_search,
+                                    owner_id=owner_id)
         except Exception as exc:  # noqa: BLE001 - surfaced as an SSE error event
             logger.exception("Streaming run failed: %s", exc)
             events.put({"type": "error", "message": str(exc)})
@@ -303,16 +325,19 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
                         confidence=float(done_payload.get("confidence") or 0.0),
                         sources=done_payload.get("sources") or [],
                         run_id=done_payload.get("run_id", ""),
-                        trace=done_payload.get("trace") or {})
+                        trace=done_payload.get("trace") or {},
+                        owner_id=owner_id)
                 except Exception as exc:  # noqa: BLE001 - persistence must not break the stream
                     logger.warning("Could not persist streamed conversation: %s", exc)
                 # Best-effort cache store so the next identical question
                 # (or paraphrase) is served from the cache instead.
-                # Role-scoped like the lookup (guardrails).
+                # Role-scoped like the lookup (guardrails), and
+                # owner-scoped like it too.
                 try:
                     await asyncio.to_thread(
                         cache.store, dict(done_payload), req.question,
-                        req.history, documents, qemb, req.role)
+                        req.history, documents, qemb, req.role,
+                        owner_id=owner_id)
                 except Exception as exc:  # noqa: BLE001 - caching must not break the stream
                     logger.warning("Response cache: store failed (%s)", exc)
             # The producer thread finishes on its own once the run ends; do
@@ -327,11 +352,12 @@ async def chat_stream(req: ChatRequest, request: Request) -> StreamingResponse:
 
 
 @app.get("/api/runs/{run_id}")
-async def get_run(run_id: str) -> dict:
-    trace = get_run_trace(run_id)
+async def get_run(run_id: str, user: dict = Depends(require_user)) -> dict:
+    owner_id = user["id"]
+    trace = get_run_trace(run_id, owner_id=owner_id)
     if trace is not None:
         return {"run_id": run_id, "trace": trace}
-    conv = await get_conversation_by_run(run_id)
+    conv = await get_conversation_by_run(run_id, owner_id=owner_id)
     if conv is not None and conv.get("trace"):
         return {"run_id": run_id, "trace": conv["trace"],
                 "conversation_id": conv["id"]}
@@ -343,7 +369,8 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB cap on file uploads
 
 @app.post("/api/ingest", status_code=202)
 async def ingest(request: Request, file: UploadFile = File(...),
-                 access_roles: str | None = Form(None)) -> dict:
+                 access_roles: str | None = Form(None),
+                 user: dict = Depends(require_user)) -> dict:
     """Queue a file ingest. ``access_roles`` is an optional JSON list or
     comma-separated string (e.g. ["exec"] or "hr,exec") tagging the
     document for guardrails; omitted means public (["employee"]).
@@ -381,7 +408,8 @@ async def ingest(request: Request, file: UploadFile = File(...),
     job = await create_job(kind="file", title=Path(file.filename or "upload").stem,
                            source=file.filename or "upload",
                            file_data=data, file_name=file.filename or "",
-                           meta={"access_roles": roles})
+                           meta={"access_roles": roles},
+                           owner_id=user["id"])
     try:
         enqueue_ingest_job(job["job_id"])
     except Exception as exc:  # noqa: BLE001 - queue down: fail loudly, not silently
@@ -395,7 +423,8 @@ async def ingest(request: Request, file: UploadFile = File(...),
 
 
 @app.post("/api/ingest-url", status_code=202)
-async def ingest_url_endpoint(req: IngestUrlRequest) -> dict:
+async def ingest_url_endpoint(req: IngestUrlRequest,
+                              user: dict = Depends(require_user)) -> dict:
     """Queue a URL ingest. Returns 202 with ``{job_id, status}`` —
     same polling contract as file ingest (see above)."""
     from app.db import create_job
@@ -407,7 +436,8 @@ async def ingest_url_endpoint(req: IngestUrlRequest) -> dict:
                             detail="URL must start with http:// or https://")
     roles = normalize_roles(req.access_roles)
     job = await create_job(kind="url", title=url, source=url,
-                           meta={"access_roles": roles})
+                           meta={"access_roles": roles},
+                           owner_id=user["id"])
     try:
         enqueue_ingest_job(job["job_id"])
     except Exception as exc:  # noqa: BLE001 - queue down: fail loudly, not silently
@@ -421,16 +451,19 @@ async def ingest_url_endpoint(req: IngestUrlRequest) -> dict:
 
 
 @app.get("/api/jobs/{job_id}")
-async def get_job_endpoint(job_id: str) -> dict:
-    job = await get_job(job_id)
+async def get_job_endpoint(job_id: str,
+                           user: dict = Depends(require_user)) -> dict:
+    job = await get_job(job_id, owner_id=user["id"])
     if job is None:
         raise HTTPException(status_code=404, detail=f"No ingest job: {job_id}")
     return job
 
 
 @app.get("/api/jobs")
-async def list_jobs_endpoint(limit: int = 50) -> dict:
-    return {"jobs": await list_jobs(limit=max(1, min(limit, 200)))}
+async def list_jobs_endpoint(limit: int = 50,
+                             user: dict = Depends(require_user)) -> dict:
+    return {"jobs": await list_jobs(owner_id=user["id"],
+                                    limit=max(1, min(limit, 200)))}
 
 
 def _parse_roles_field(raw: str | None):
@@ -449,18 +482,31 @@ def _parse_roles_field(raw: str | None):
 
 
 @app.get("/api/documents")
-async def documents() -> dict:
-    docs = await list_documents()
-    corpus = await get_corpus_stats()
+async def documents(user: dict = Depends(require_user)) -> dict:
+    docs = await list_documents(owner_id=user["id"])
+    corpus = await get_corpus_stats(owner_id=user["id"])
     return {"documents": docs, "corpus": corpus}
 
 
+@app.get("/api/documents/{doc_id}")
+async def get_document_endpoint(doc_id: str,
+                                user: dict = Depends(require_user)) -> dict:
+    """One document, only when it belongs to the requester — another
+    user's document looks exactly like a missing one (404)."""
+    doc = await get_document(doc_id, owner_id=user["id"])
+    if doc is None:
+        raise HTTPException(status_code=404,
+                            detail=f"Document not found: {doc_id}")
+    return doc
+
+
 @app.delete("/api/documents/{doc_id}")
-async def delete_doc(doc_id: str) -> dict:
-    doc = await get_document(doc_id)
-    if not await delete_document(doc_id):
+async def delete_doc(doc_id: str, user: dict = Depends(require_user)) -> dict:
+    owner_id = user["id"]
+    doc = await get_document(doc_id, owner_id=owner_id)
+    if not await delete_document(doc_id, owner_id=owner_id):
         raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
-    get_vector_store().delete_by_document(doc_id)
+    get_vector_store().delete_by_document(doc_id, owner_id=owner_id)
     # Any cached answer grounded in this document is now stale — drop it
     # eagerly (the lookup-time cited-doc check is the backstop).
     if doc is not None:
@@ -477,5 +523,7 @@ async def delete_doc(doc_id: str) -> dict:
 
 
 @app.get("/api/conversations")
-async def conversations(limit: int = 50) -> dict:
-    return {"conversations": await list_conversations(limit=limit)}
+async def conversations(limit: int = 50,
+                        user: dict = Depends(require_user)) -> dict:
+    return {"conversations": await list_conversations(owner_id=user["id"],
+                                                      limit=limit)}

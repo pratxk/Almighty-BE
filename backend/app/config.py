@@ -156,11 +156,11 @@ if _HAS_PYDANTIC_SETTINGS:
         # (system + history + retrieved context + question, chars/4
         # estimate): oldest history turns are dropped first, then the
         # lowest-graded chunks. MAX_OUTPUT_TOKENS caps each generation
-        # call (previously uncapped). MAX_HISTORY_TURNS is how many
-        # prior turns (user+assistant pairs) ride along with each
-        # question for follow-up resolution.
+        # call (previously uncapped). Raised to 2048 on 2026-11-24: at
+        # 1024 tokens a summary of several topics came out as one-line
+        # bullets because the answer simply ran out of room.
         MAX_CONTEXT_TOKENS: int = 8000
-        MAX_OUTPUT_TOKENS: int = 1024
+        MAX_OUTPUT_TOKENS: int = 2048
         MAX_HISTORY_TURNS: int = 3
 
         # Guardrails (see guardrails.py). Blocked topics are category
@@ -244,7 +244,7 @@ else:
             self.CHUNK_SIZE = _env_int("CHUNK_SIZE", 1000)
             self.CHUNK_OVERLAP = _env_int("CHUNK_OVERLAP", 200)
             self.MAX_CONTEXT_TOKENS = _env_int("MAX_CONTEXT_TOKENS", 8000)
-            self.MAX_OUTPUT_TOKENS = _env_int("MAX_OUTPUT_TOKENS", 1024)
+            self.MAX_OUTPUT_TOKENS = _env_int("MAX_OUTPUT_TOKENS", 2048)
             self.MAX_HISTORY_TURNS = _env_int("MAX_HISTORY_TURNS", 3)
             self.GUARDRAILS_ENABLED = os.environ.get("GUARDRAILS_ENABLED", "true").lower() in ("1", "true", "yes")
             self.GUARDRAIL_DEFAULT_ROLE = env("GUARDRAIL_DEFAULT_ROLE", "employee")

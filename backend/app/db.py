@@ -169,10 +169,23 @@ def _normalize_database_url(url: str) -> str:
     """Accept plain Postgres URLs and rewrite them to the async driver
     scheme SQLAlchemy needs. Pratik pastes the URL as ``postgresql://``
     (Supabase's own form); ``create_async_engine`` refuses that and
-    needs ``postgresql+asyncpg://``."""
+    needs ``postgresql+asyncpg://``.
+
+    Also drops any query string (``?sslmode=require``,
+    ``channel_binding=require``, ...): SQLAlchemy hands those to
+    asyncpg as keyword arguments and asyncpg rejects them
+    (``TypeError: connect() got an unexpected keyword argument
+    'sslmode'`` — that killed the first Neon deploy). TLS is already
+    handled separately — ``_get_engine`` passes
+    ``connect_args={"ssl": True}`` for non-local hosts — so dropping
+    the query string loses nothing."""
     for prefix in ("postgresql://", "postgres://"):
         if url.startswith(prefix):
-            return "postgresql+asyncpg://" + url[len(prefix):]
+            url = "postgresql+asyncpg://" + url[len(prefix):]
+            # Strip the query string only for Postgres URLs. Other
+            # schemes (notably sqlite) are returned untouched — a
+            # urlparse round-trip would rewrite their slashes.
+            return urlparse(url)._replace(query="", fragment="").geturl()
     return url
 
 

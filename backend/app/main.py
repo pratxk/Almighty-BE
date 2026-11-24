@@ -66,9 +66,33 @@ class IngestUrlRequest(BaseModel):
     access_roles: list[str] | None = None
 
 
+async def _init_db_with_retry() -> None:
+    """Connect to the database, retrying for ~90s.
+
+    The database host's DNS is flaky on first boot (on Render it failed
+    twice, then resolved 26s later), and one failed lookup used to kill
+    the whole deploy. Retry with growing waits; give up loudly only
+    after ~90s so a truly unreachable database still fails the deploy.
+    """
+    waits = [0, 2, 4, 8, 12, 16, 20, 24]
+    last_error: Exception | None = None
+    for attempt, wait in enumerate(waits, start=1):
+        if wait:
+            await asyncio.sleep(wait)
+        try:
+            await init_db()
+            return
+        except Exception as exc:  # noqa: BLE001 - any connect failure retries
+            last_error = exc
+            logger.warning("DB init failed (try %d/%d): %s",
+                           attempt, len(waits), exc)
+    if last_error is not None:
+        raise last_error
+
+
 @app.on_event("startup")
 async def startup() -> None:
-    await init_db()
+    await _init_db_with_retry()
     setup_tracing()
     store = get_vector_store()
     # A fresh/empty metadata DB must not see stale BM25 chunks left over

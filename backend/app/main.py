@@ -338,12 +338,19 @@ async def get_run(run_id: str) -> dict:
     raise HTTPException(status_code=404, detail=f"No run trace found for id: {run_id}")
 
 
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB cap on file uploads
+
+
 @app.post("/api/ingest", status_code=202)
-async def ingest(file: UploadFile = File(...),
+async def ingest(request: Request, file: UploadFile = File(...),
                  access_roles: str | None = Form(None)) -> dict:
     """Queue a file ingest. ``access_roles`` is an optional JSON list or
     comma-separated string (e.g. ["exec"] or "hr,exec") tagging the
     document for guardrails; omitted means public (["employee"]).
+
+    Files over 10 MB are rejected (413) — the whole file is read into
+    memory and stored with the job, and the 512 MB Render container
+    cannot take unbounded uploads.
 
     Returns 202 straight away with ``{job_id, status: "queued"}`` —
     the slow work (extract, chunk, embed) runs in the RQ worker. Poll
@@ -357,7 +364,19 @@ async def ingest(file: UploadFile = File(...),
     if suffix not in (".pdf", ".txt", ".md", ".markdown"):
         raise HTTPException(status_code=400,
                             detail=f"Unsupported file type: {suffix} (use .pdf, .txt or .md)")
+    # Fast reject before reading the body: Content-Length covers the
+    # whole multipart payload, so allow a small overhead margin.
+    try:
+        content_length = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        content_length = 0
+    if content_length > MAX_UPLOAD_BYTES + 65536:
+        raise HTTPException(status_code=413,
+                            detail="File is too large (max 10 MB).")
     data = await file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413,
+                            detail="File is too large (max 10 MB).")
     roles = normalize_roles(_parse_roles_field(access_roles))
     job = await create_job(kind="file", title=Path(file.filename or "upload").stem,
                            source=file.filename or "upload",
